@@ -2,7 +2,7 @@
 
 export const dynamic = "force-dynamic";
 
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { Suspense, useEffect, useMemo, useState, type FormEvent } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
@@ -55,6 +55,26 @@ type Status = {
   type: "idle" | "loading" | "error" | "success";
   message?: string;
 };
+
+function PaymentConfirmation({ userId }: { userId: string | null }) {
+  const searchParams = useSearchParams();
+
+  useEffect(() => {
+    if (!userId) return;
+    const sessionId = searchParams.get("session_id");
+    const paymentStatus = searchParams.get("payment");
+
+    if (!sessionId || paymentStatus !== "success") return;
+
+    const confirmPayment = async () => {
+      await fetch(`/api/stripe/confirm?session_id=${sessionId}`);
+    };
+
+    confirmPayment();
+  }, [searchParams, userId]);
+
+  return null;
+}
 
 type CalendarTab = "month" | "week" | "day";
 
@@ -228,7 +248,6 @@ const roleOptions: Array<{
 
 export default function ProfilePage() {
   const supabase = useMemo(() => createSupabaseBrowserClient(), []);
-  const searchParams = useSearchParams();
   const [userEmail, setUserEmail] = useState<string | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
@@ -459,20 +478,6 @@ export default function ProfilePage() {
 
     loadEarnings();
   }, [supabase, userId, showMedicalTools]);
-
-  useEffect(() => {
-    if (!userId) return;
-    const sessionId = searchParams.get("session_id");
-    const paymentStatus = searchParams.get("payment");
-
-    if (!sessionId || paymentStatus !== "success") return;
-
-    const confirmPayment = async () => {
-      await fetch(`/api/stripe/confirm?session_id=${sessionId}`);
-    };
-
-    confirmPayment();
-  }, [searchParams, userId]);
 
   useEffect(() => {
     if (!userId) {
@@ -951,6 +956,9 @@ export default function ProfilePage() {
 
   return (
     <div className="relative min-h-screen overflow-hidden px-6 py-12 text-zinc-900">
+      <Suspense fallback={null}>
+        <PaymentConfirmation userId={userId} />
+      </Suspense>
       <div className="pointer-events-none absolute left-[-15%] top-[-30%] h-[380px] w-[380px] rounded-full bg-emerald-200/60 blur-3xl" />
       <div className="pointer-events-none absolute bottom-[-25%] right-[-15%] h-[360px] w-[360px] rounded-full bg-amber-200/70 blur-3xl" />
 
