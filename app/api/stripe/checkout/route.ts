@@ -6,14 +6,6 @@ export const runtime = "nodejs";
 
 const stripeSecretKey = process.env.STRIPE_SECRET_KEY;
 
-if (!stripeSecretKey) {
-  throw new Error("Missing STRIPE_SECRET_KEY.");
-}
-
-const stripe = new Stripe(stripeSecretKey, {
-  apiVersion: "2024-06-20",
-});
-
 type CheckoutPayload = {
   providerId: string;
   startsAt: string;
@@ -24,6 +16,17 @@ type CheckoutPayload = {
 const toAmountInPence = (amount: number) => Math.round(amount * 100);
 
 export async function POST(request: Request) {
+  if (!stripeSecretKey) {
+    return NextResponse.json(
+      { error: "Missing STRIPE_SECRET_KEY." },
+      { status: 500 },
+    );
+  }
+
+  const stripe = new Stripe(stripeSecretKey, {
+    apiVersion: "2024-06-20",
+  });
+
   const tokenHeader = request.headers.get("authorization") ?? "";
   const token = tokenHeader.startsWith("Bearer ")
     ? tokenHeader.slice("Bearer ".length)
