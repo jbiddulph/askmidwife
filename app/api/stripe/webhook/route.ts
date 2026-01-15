@@ -8,18 +8,21 @@ export const runtime = "nodejs";
 const stripeSecretKey = process.env.STRIPE_SECRET_KEY;
 const stripeWebhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
 
-if (!stripeSecretKey || !stripeWebhookSecret) {
-  throw new Error("Missing STRIPE_SECRET_KEY or STRIPE_WEBHOOK_SECRET.");
-}
-
-const stripe = new Stripe(stripeSecretKey, {
-  apiVersion: "2024-06-20",
-});
-
 const toGbpAmount = (amountInMinor: number | null | undefined) =>
   Number(((amountInMinor ?? 0) / 100).toFixed(2));
 
 export async function POST(request: Request) {
+  if (!stripeSecretKey || !stripeWebhookSecret) {
+    return NextResponse.json(
+      { error: "Missing STRIPE_SECRET_KEY or STRIPE_WEBHOOK_SECRET." },
+      { status: 500 },
+    );
+  }
+
+  const stripe = new Stripe(stripeSecretKey, {
+    apiVersion: "2024-06-20",
+  });
+
   const body = await request.text();
   const signature = (await headers()).get("stripe-signature");
 
@@ -36,7 +39,7 @@ export async function POST(request: Request) {
     event = stripe.webhooks.constructEvent(
       body,
       signature,
-      stripeWebhookSecret!,
+      stripeWebhookSecret,
     );
   } catch (error) {
     return NextResponse.json(
