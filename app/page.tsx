@@ -76,19 +76,37 @@ export default function Home() {
     }
 
     const loadRole = async () => {
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from("askmidwife_profiles")
         .select("id, email, display_name, role")
         .eq("id", userId)
         .maybeSingle();
 
-      if (data?.role) {
-        setUserRole(data.role as ProfileRole);
+      if (error) {
+        return;
       }
+
+      if (!data) {
+        const { error: insertError } = await supabase
+          .from("askmidwife_profiles")
+          .insert({
+            id: userId,
+            email: userEmail,
+            display_name: null,
+            role: "client",
+          });
+
+        if (!insertError) {
+          setUserRole("client");
+        }
+        return;
+      }
+
+      setUserRole(data.role as ProfileRole);
     };
 
     loadRole();
-  }, [supabase, userId]);
+  }, [supabase, userId, userEmail]);
 
   useEffect(() => {
     if (!userId || !userRole) {
