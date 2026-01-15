@@ -6,18 +6,21 @@ export const runtime = "nodejs";
 
 const stripeSecretKey = process.env.STRIPE_SECRET_KEY;
 
-if (!stripeSecretKey) {
-  throw new Error("Missing STRIPE_SECRET_KEY.");
-}
-
-const stripe = new Stripe(stripeSecretKey, {
-  apiVersion: "2024-06-20",
-});
-
 const toGbpAmount = (amountInMinor: number | null | undefined) =>
   Number(((amountInMinor ?? 0) / 100).toFixed(2));
 
 export async function GET(request: Request) {
+  if (!stripeSecretKey) {
+    return NextResponse.json(
+      { error: "Missing STRIPE_SECRET_KEY." },
+      { status: 500 },
+    );
+  }
+
+  const stripe = new Stripe(stripeSecretKey, {
+    apiVersion: "2024-06-20",
+  });
+
   const { searchParams } = new URL(request.url);
   const sessionId = searchParams.get("session_id");
 
