@@ -22,6 +22,13 @@ type Message = {
   created_at: string;
 };
 
+type Profile = {
+  id: string;
+  email: string | null;
+  display_name: string | null;
+  role: "medical" | "client" | "admin";
+};
+
 type Status = "idle" | "loading" | "ready" | "error";
 
 export default function AppointmentConnectPage() {
@@ -39,6 +46,9 @@ export default function AppointmentConnectPage() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [messageInput, setMessageInput] = useState("");
   const [chatStatus, setChatStatus] = useState<Status>("idle");
+  const [profileLookup, setProfileLookup] = useState<Record<string, Profile>>(
+    {},
+  );
 
   useEffect(() => {
     let mounted = true;
@@ -83,6 +93,20 @@ export default function AppointmentConnectPage() {
       }
 
       setAppointment(data);
+      const { data: profileData } = await supabase
+        .from("askmidwife_profiles")
+        .select("id, email, display_name, role")
+        .in("id", [data.patient_id, data.provider_id]);
+
+      if (profileData) {
+        setProfileLookup((prev) => {
+          const next = { ...prev };
+          profileData.forEach((profile) => {
+            next[profile.id] = profile;
+          });
+          return next;
+        });
+      }
       setConnectStatus("ready");
     };
 
@@ -389,7 +413,12 @@ export default function AppointmentConnectPage() {
                         : "bg-white text-zinc-700"
                     }`}
                   >
-                    <p>{message.message}</p>
+                    <p className="text-[10px] uppercase tracking-[0.2em] text-zinc-400">
+                      {profileLookup[message.sender_id]?.display_name ||
+                        profileLookup[message.sender_id]?.email ||
+                        (message.sender_id === userId ? "You" : "Participant")}
+                    </p>
+                    <p className="mt-1">{message.message}</p>
                     <p className="mt-1 text-[10px] uppercase tracking-[0.2em] text-zinc-400">
                       {new Date(message.created_at).toLocaleTimeString("en-GB", {
                         hour: "2-digit",
