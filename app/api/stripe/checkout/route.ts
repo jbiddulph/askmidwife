@@ -79,9 +79,23 @@ export async function POST(request: Request) {
     .eq("id", payload.providerId)
     .maybeSingle();
 
-  if (providerError || !provider || provider.role !== "medical") {
+  if (providerError) {
     return NextResponse.json(
-      { error: "Selected provider is unavailable." },
+      { error: providerError.message },
+      { status: 400 },
+    );
+  }
+
+  if (!provider) {
+    return NextResponse.json(
+      { error: "Provider profile not found." },
+      { status: 400 },
+    );
+  }
+
+  if (provider.role !== "medical") {
+    return NextResponse.json(
+      { error: "Provider role is not medical." },
       { status: 400 },
     );
   }
