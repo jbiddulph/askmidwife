@@ -39,6 +39,7 @@ type Profile = {
   email: string | null;
   display_name: string | null;
   role: Role;
+  hourly_pay_gbp: number | null;
   created_at: string;
 };
 
@@ -216,6 +217,7 @@ export default function ProfilePage() {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [formName, setFormName] = useState("");
   const [formRole, setFormRole] = useState<Role>("client");
+  const [formHourlyPay, setFormHourlyPay] = useState("");
   const [profileStatus, setProfileStatus] = useState<Status>({
     type: "idle",
   });
@@ -332,7 +334,7 @@ export default function ProfilePage() {
       setLoadingProfile(true);
       const { data, error } = await supabase
         .from("askmidwife_profiles")
-        .select("id, email, display_name, role, created_at")
+        .select("id, email, display_name, role, hourly_pay_gbp, created_at")
         .eq("id", userId)
         .maybeSingle();
 
@@ -343,6 +345,11 @@ export default function ProfilePage() {
       setProfile(data ?? null);
       setFormName(data?.display_name ?? "");
       setFormRole((data?.role as Role) ?? "client");
+      setFormHourlyPay(
+        data?.hourly_pay_gbp != null
+          ? Number(data.hourly_pay_gbp).toFixed(2)
+          : "",
+      );
       setLoadingProfile(false);
     };
 
@@ -382,7 +389,7 @@ export default function ProfilePage() {
     const loadProviders = async () => {
       const { data, error } = await supabase
         .from("askmidwife_profiles")
-        .select("id, email, display_name, role, created_at")
+        .select("id, email, display_name, role, hourly_pay_gbp, created_at")
         .eq("role", "medical")
         .order("display_name", { ascending: true });
 
@@ -476,7 +483,7 @@ export default function ProfilePage() {
       if (profileIds.length) {
         const { data: profileData } = await supabase
           .from("askmidwife_profiles")
-          .select("id, email, display_name, role, created_at")
+          .select("id, email, display_name, role, hourly_pay_gbp, created_at")
           .in("id", profileIds);
 
         if (profileData) {
@@ -505,11 +512,31 @@ export default function ProfilePage() {
       return;
     }
 
+    const normalizedHourlyPay = formHourlyPay.trim();
+    const hourlyPayValue =
+      normalizedHourlyPay === "" ? null : Number(normalizedHourlyPay);
+
+    if (formRole === "medical") {
+      if (
+        normalizedHourlyPay === "" ||
+        hourlyPayValue === null ||
+        Number.isNaN(hourlyPayValue) ||
+        hourlyPayValue < 0
+      ) {
+        setProfileStatus({
+          type: "error",
+          message: "Enter a valid hourly rate in GBP for medical profiles.",
+        });
+        return;
+      }
+    }
+
     const payload = {
       id: userId,
       email: userEmail,
       display_name: formName.trim(),
       role: formRole,
+      hourly_pay_gbp: formRole === "medical" ? hourlyPayValue : null,
     };
 
     const { error } = profile
@@ -882,6 +909,25 @@ export default function ProfilePage() {
                 ))}
               </select>
             </label>
+
+            {formRole === "medical" && (
+              <label className="flex flex-col gap-2 text-sm font-medium text-zinc-700">
+                Hourly pay (GBP)
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  min="0"
+                  step="0.01"
+                  placeholder="24.00"
+                  className="rounded-2xl border border-zinc-200 bg-white px-4 py-3 text-base outline-none ring-emerald-200 transition focus:ring-2"
+                  value={formHourlyPay}
+                  onChange={(event) => setFormHourlyPay(event.target.value)}
+                />
+                <span className="text-xs text-zinc-500">
+                  Patients are charged by the hour; platform fee is 15%.
+                </span>
+              </label>
+            )}
 
             <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-700">
               <p className="font-semibold">{selectedRole.label}</p>
