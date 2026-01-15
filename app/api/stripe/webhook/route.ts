@@ -36,7 +36,7 @@ export async function POST(request: Request) {
     event = stripe.webhooks.constructEvent(
       body,
       signature,
-      stripeWebhookSecret,
+      stripeWebhookSecret!,
     );
   } catch (error) {
     return NextResponse.json(
