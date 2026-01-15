@@ -96,10 +96,18 @@ export async function POST(request: Request) {
     const paymentIntent = await stripe.paymentIntents.retrieve(
       paymentIntentId,
       {
-        expand: ["charges.data.balance_transaction"],
+        expand: ["latest_charge"],
       },
     );
-    const charge = paymentIntent.charges.data[0];
+    let charge: Stripe.Charge | null = null;
+
+    if (paymentIntent.latest_charge) {
+      charge =
+        typeof paymentIntent.latest_charge === "string"
+          ? await stripe.charges.retrieve(paymentIntent.latest_charge)
+          : paymentIntent.latest_charge;
+    }
+
     const balanceTransaction =
       typeof charge?.balance_transaction === "object"
         ? charge.balance_transaction
