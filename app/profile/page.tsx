@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 
 type Role = "medical" | "client" | "admin";
@@ -41,6 +42,11 @@ type Profile = {
   role: Role;
   hourly_pay_gbp: number | null;
   created_at: string;
+};
+
+type Payment = {
+  provider_earnings_gbp: number;
+  status: "pending" | "paid" | "refunded";
 };
 
 type Status = {
@@ -220,6 +226,7 @@ const roleOptions: Array<{
 
 export default function ProfilePage() {
   const supabase = useMemo(() => createSupabaseBrowserClient(), []);
+  const searchParams = useSearchParams();
   const [userEmail, setUserEmail] = useState<string | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
@@ -267,6 +274,13 @@ export default function ProfilePage() {
   const [clientSelectedDate, setClientSelectedDate] = useState<Date>(
     () => new Date(),
   );
+  const [earningsStatus, setEarningsStatus] = useState<Status>({
+    type: "idle",
+  });
+  const [earningsSummary, setEarningsSummary] = useState<{
+    available: number;
+    pending: number;
+  }>({ available: 0, pending: 0 });
 
   const daySlots = useMemo(() => createTimeSlots(7, 18, 30, 30), []);
   const confirmedAppointments = useMemo(
@@ -405,6 +419,58 @@ export default function ProfilePage() {
 
     loadAvailability();
   }, [supabase, userId, showMedicalTools]);
+
+  useEffect(() => {
+    if (!userId || !showMedicalTools) {
+      setEarningsSummary({ available: 0, pending: 0 });
+      return;
+    }
+
+    const loadEarnings = async () => {
+      setEarningsStatus({ type: "loading" });
+      const { data, error } = await supabase
+        .from("askmidwife_appointment_payments")
+        .select("provider_earnings_gbp, status")
+        .eq("provider_id", userId);
+
+      if (error) {
+        setEarningsStatus({ type: "error", message: error.message });
+        return;
+      }
+
+      const summary = (data ?? []).reduce(
+        (acc, item) => {
+          const amount = Number(item.provider_earnings_gbp) || 0;
+          if (item.status === "paid") {
+            acc.available += amount;
+          } else if (item.status === "pending") {
+            acc.pending += amount;
+          }
+          return acc;
+        },
+        { available: 0, pending: 0 },
+      );
+
+      setEarningsSummary(summary);
+      setEarningsStatus({ type: "success" });
+    };
+
+    loadEarnings();
+  }, [supabase, userId, showMedicalTools]);
+
+  useEffect(() => {
+    if (!userId) return;
+    const sessionId = searchParams.get("session_id");
+    const paymentStatus = searchParams.get("payment");
+
+    if (!sessionId || paymentStatus !== "success") return;
+
+    const confirmPayment = async () => {
+      await fetch(`/api/stripe/confirm?session_id=${sessionId}`);
+    };
+
+    confirmPayment();
+  }, [searchParams, userId]);
 
   useEffect(() => {
     if (!userId) {
@@ -1046,6 +1112,38 @@ export default function ProfilePage() {
               <p className="text-sm text-zinc-500">
                 Add the times you are open for consultations.
               </p>
+            </div>
+
+            <div className="grid gap-3 rounded-2xl border border-emerald-200/70 bg-emerald-50/70 p-4 text-sm text-emerald-800">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-xs font-semibold uppercase tracking-[0.2em] text-emerald-700/80">
+                  Earnings summary
+                </span>
+                {earningsStatus.type === "loading" ? (
+                  <span className="text-xs text-emerald-700/80">
+                    Refreshing…
+                  </span>
+                ) : null}
+              </div>
+              <div className="flex flex-wrap gap-6">
+                <div>
+                  <p className="text-xs text-emerald-700/80">Available</p>
+                  <p className="text-lg font-semibold text-emerald-900">
+                    {formatCurrency(earningsSummary.available)}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-xs text-emerald-700/80">Pending</p>
+                  <p className="text-lg font-semibold text-emerald-900">
+                    {formatCurrency(earningsSummary.pending)}
+                  </p>
+                </div>
+              </div>
+              {earningsStatus.type === "error" && earningsStatus.message && (
+                <p className="text-xs text-red-600">
+                  {earningsStatus.message}
+                </p>
+              )}
             </div>
 
             <div
