@@ -62,6 +62,14 @@ const formatDateTime = (value: string) =>
     timeStyle: "short",
   }).format(new Date(value));
 
+const formatCurrency = (value: number) =>
+  new Intl.NumberFormat("en-GB", {
+    style: "currency",
+    currency: "GBP",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(value);
+
 const toIso = (value: string) => new Date(value).toISOString();
 
 const toInputValue = (value: string) => {
@@ -280,6 +288,24 @@ export default function ProfilePage() {
   const selectedProvider = providers.find(
     (provider) => provider.id === selectedProviderId,
   );
+  const selectedProviderRate =
+    selectedProvider?.hourly_pay_gbp != null
+      ? Number(selectedProvider.hourly_pay_gbp)
+      : null;
+  const selectedDurationMinutes =
+    appointmentStart && appointmentEnd
+      ? Math.round(
+          (new Date(appointmentEnd).getTime() -
+            new Date(appointmentStart).getTime()) /
+            60000,
+        )
+      : null;
+  const selectedEstimatedTotal =
+    selectedProviderRate != null && selectedDurationMinutes
+      ? Number(
+          ((selectedProviderRate * selectedDurationMinutes) / 60).toFixed(2),
+        )
+      : null;
   const medicalMonthGrid = useMemo(
     () => getMonthGrid(medicalSelectedDate),
     [medicalSelectedDate],
@@ -663,46 +689,61 @@ export default function ProfilePage() {
       return;
     }
 
-    const payload = {
-      patient_id: userId,
-      provider_id: selectedProviderId,
-      starts_at: toIso(appointmentStart),
-      ends_at: toIso(appointmentEnd),
-      status: "requested" as AppointmentStatus,
-      notes: appointmentNotes.trim() || null,
-    };
-
-    const { data, error } = await supabase
-      .from("askmidwife_appointments")
-      .insert(payload)
-      .select(
-        "id, patient_id, provider_id, starts_at, ends_at, status, notes, proposed_reason, created_at",
-      );
-
-    if (error) {
-      setScheduleStatus({ type: "error", message: error.message });
+    if (new Date(appointmentEnd) <= new Date(appointmentStart)) {
+      setScheduleStatus({
+        type: "error",
+        message: "End time must be after the start time.",
+      });
       return;
     }
 
-    if (data?.[0]) {
-      setAppointments((prev) => [...prev, data[0]]);
-      setAppointmentDrafts((prev) => ({
-        ...prev,
-        [data[0].id]: {
-          starts_at: toInputValue(data[0].starts_at),
-          ends_at: toInputValue(data[0].ends_at),
-          reason: data[0].proposed_reason ?? "",
-        },
-      }));
+    const { data: sessionData, error: sessionError } =
+      await supabase.auth.getSession();
+
+    if (sessionError || !sessionData.session?.access_token) {
+      setScheduleStatus({
+        type: "error",
+        message: "You need to sign in again to pay for this appointment.",
+      });
+      return;
     }
 
-    setAppointmentStart("");
-    setAppointmentEnd("");
-    setAppointmentNotes("");
-    setScheduleStatus({
-      type: "success",
-      message: "Appointment requested. Awaiting confirmation.",
+    const payload = {
+      providerId: selectedProviderId,
+      startsAt: toIso(appointmentStart),
+      endsAt: toIso(appointmentEnd),
+      notes: appointmentNotes.trim() || null,
+    };
+
+    const response = await fetch("/api/stripe/checkout", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${sessionData.session.access_token}`,
+      },
+      body: JSON.stringify(payload),
     });
+
+    if (!response.ok) {
+      const errorPayload = (await response.json()) as { error?: string };
+      setScheduleStatus({
+        type: "error",
+        message: errorPayload.error ?? "Payment could not be started.",
+      });
+      return;
+    }
+
+    const responseData = (await response.json()) as { url?: string };
+
+    if (!responseData.url) {
+      setScheduleStatus({
+        type: "error",
+        message: "Payment session was not created correctly.",
+      });
+      return;
+    }
+
+    window.location.assign(responseData.url);
   };
 
   const handleProviderAccept = async (appointmentId: string) => {
@@ -1515,9 +1556,23 @@ export default function ProfilePage() {
                           {provider.display_name ||
                             provider.email ||
                             provider.id}
+                          {provider.hourly_pay_gbp != null
+                            ? ` · ${formatCurrency(
+                                Number(provider.hourly_pay_gbp),
+                              )}/hr`
+                            : ""}
                         </option>
                       ))}
                     </select>
+                    {selectedProviderRate != null ? (
+                      <span className="text-xs text-zinc-500">
+                        Hourly rate: {formatCurrency(selectedProviderRate)}
+                      </span>
+                    ) : selectedProviderId ? (
+                      <span className="text-xs text-amber-600">
+                        Hourly rate not set for this clinician.
+                      </span>
+                    ) : null}
                   </label>
 
                   <div className="grid gap-4 md:grid-cols-2">
@@ -1555,6 +1610,17 @@ export default function ProfilePage() {
                       }
                     />
                   </label>
+
+                  {selectedEstimatedTotal != null &&
+                  selectedDurationMinutes &&
+                  selectedDurationMinutes > 0 ? (
+                    <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+                      Estimated total for {selectedDurationMinutes} minutes:{" "}
+                      <span className="font-semibold">
+                        {formatCurrency(selectedEstimatedTotal)}
+                      </span>
+                    </div>
+                  ) : null}
 
                   <button
                     type="submit"
