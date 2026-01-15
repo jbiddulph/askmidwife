@@ -358,6 +358,12 @@ export default function Home() {
                 </p>
               </div>
             </div>
+            {userEmail && !userRole && (
+              <div className="mt-6 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                Finish setting up your profile to choose a role and start booking
+                consultations.
+              </div>
+            )}
             {userEmail && userRole && (
               <div className="mt-6 space-y-3">
                 <p className="text-xs font-semibold uppercase tracking-[0.2em] text-zinc-500">
@@ -424,7 +430,7 @@ export default function Home() {
                 )}
               </div>
             )}
-            {userEmail && userRole && (
+            {userEmail && (
               <div className="mt-5 flex flex-wrap gap-3">
                 {userRole === "client" && (
                   <Link
