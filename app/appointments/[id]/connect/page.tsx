@@ -48,6 +48,7 @@ export default function AppointmentConnectPage() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [messageInput, setMessageInput] = useState("");
   const [chatStatus, setChatStatus] = useState<Status>("idle");
+  const [clearStatus, setClearStatus] = useState<Status>("idle");
   const [profileLookup, setProfileLookup] = useState<Record<string, Profile>>(
     {},
   );
@@ -340,6 +341,23 @@ export default function AppointmentConnectPage() {
     }
   };
 
+  const handleClearChat = async () => {
+    if (!appointment) return;
+    setClearStatus("loading");
+    const { error } = await supabase
+      .from("askmidwife_appointment_messages")
+      .delete()
+      .eq("appointment_id", appointment.id);
+
+    if (error) {
+      setClearStatus("error");
+      return;
+    }
+
+    setMessages([]);
+    setClearStatus("success");
+  };
+
   if (connectStatus === "error") {
     return (
       <div className="min-h-screen px-6 py-12 text-zinc-900">
@@ -472,7 +490,7 @@ export default function AppointmentConnectPage() {
               <span>Chat</span>
               <span className="text-xs text-zinc-400">{chatStatus}</span>
             </div>
-            <div className="flex-1 space-y-3 overflow-y-auto rounded-2xl border border-zinc-200/80 bg-zinc-50/70 p-4 text-sm text-zinc-700">
+            <div className="max-h-[500px] flex-1 space-y-3 overflow-y-auto rounded-2xl border border-zinc-200/80 bg-zinc-50/70 p-4 text-sm text-zinc-700">
               {messages.length ? (
                 messages.map((message) => (
                   <div
@@ -501,6 +519,27 @@ export default function AppointmentConnectPage() {
                 <p className="text-xs text-zinc-500">
                   No messages yet. Say hello!
                 </p>
+              )}
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <button
+                type="button"
+                className="rounded-full border border-red-200 px-3 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-red-600 transition hover:border-red-300 hover:text-red-700 disabled:cursor-not-allowed disabled:border-red-100 disabled:text-red-300"
+                onClick={handleClearChat}
+                disabled={!messages.length || clearStatus === "loading"}
+              >
+                Clear chat
+              </button>
+              {clearStatus === "loading" && (
+                <span className="text-xs text-zinc-400">Clearing…</span>
+              )}
+              {clearStatus === "success" && (
+                <span className="text-xs text-emerald-600">Chat cleared.</span>
+              )}
+              {clearStatus === "error" && (
+                <span className="text-xs text-red-600">
+                  Failed to clear chat.
+                </span>
               )}
             </div>
             <div className="flex gap-2">
