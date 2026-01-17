@@ -30,6 +30,7 @@ type Profile = {
 };
 
 type Status = "idle" | "loading" | "ready" | "error";
+type ClearStatus = "idle" | "loading" | "error" | "success";
 
 export default function AppointmentConnectPage() {
   const { id } = useParams<{ id: string }>();
@@ -48,7 +49,7 @@ export default function AppointmentConnectPage() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [messageInput, setMessageInput] = useState("");
   const [chatStatus, setChatStatus] = useState<Status>("idle");
-  const [clearStatus, setClearStatus] = useState<Status>("idle");
+  const [clearStatus, setClearStatus] = useState<ClearStatus>("idle");
   const [profileLookup, setProfileLookup] = useState<Record<string, Profile>>(
     {},
   );
