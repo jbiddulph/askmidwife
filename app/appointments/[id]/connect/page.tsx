@@ -38,17 +38,61 @@ export default function AppointmentConnectPage() {
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
   const peerRef = useRef<RTCPeerConnection | null>(null);
+  const localStreamRef = useRef<MediaStream | null>(null);
   const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
   const [appointment, setAppointment] = useState<Appointment | null>(null);
   const [connectStatus, setConnectStatus] = useState<Status>("loading");
   const [connectionState, setConnectionState] = useState("connecting");
+  const [callEnded, setCallEnded] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
   const [messageInput, setMessageInput] = useState("");
   const [chatStatus, setChatStatus] = useState<Status>("idle");
   const [profileLookup, setProfileLookup] = useState<Record<string, Profile>>(
     {},
   );
+
+  const counterpartId = appointment
+    ? appointment.provider_id === userId
+      ? appointment.patient_id
+      : appointment.provider_id
+    : null;
+  const counterpartName = counterpartId
+    ? profileLookup[counterpartId]?.display_name ||
+      profileLookup[counterpartId]?.email ||
+      "the other participant"
+    : "the other participant";
+
+  const endCall = (notifyPeer: boolean) => {
+    if (notifyPeer && channelRef.current && userId) {
+      channelRef.current.send({
+        type: "broadcast",
+        event: "signal",
+        payload: {
+          from: userId,
+          kind: "end",
+        },
+      });
+    }
+
+    localStreamRef.current?.getTracks().forEach((track) => track.stop());
+    localStreamRef.current = null;
+
+    if (localVideoRef.current) {
+      localVideoRef.current.srcObject = null;
+    }
+    if (remoteVideoRef.current) {
+      remoteVideoRef.current.srcObject = null;
+    }
+
+    peerRef.current?.close();
+    peerRef.current = null;
+    channelRef.current?.unsubscribe();
+    channelRef.current = null;
+
+    setConnectionState("disconnected");
+    setCallEnded(true);
+  };
 
   useEffect(() => {
     let mounted = true;
@@ -129,6 +173,7 @@ export default function AppointmentConnectPage() {
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = stream;
         }
+        localStreamRef.current = stream;
 
         const peer = new RTCPeerConnection({
           iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
@@ -169,6 +214,11 @@ export default function AppointmentConnectPage() {
           .on("broadcast", { event: "signal" }, async ({ payload }) => {
             if (payload.from === userId) return;
             if (!peerRef.current) return;
+
+            if (payload.kind === "end") {
+              endCall(false);
+              return;
+            }
 
             if (payload.kind === "offer") {
               await peerRef.current.setRemoteDescription(payload.sdp);
@@ -221,8 +271,7 @@ export default function AppointmentConnectPage() {
 
     return () => {
       mounted = false;
-      channelRef.current?.unsubscribe();
-      peerRef.current?.close();
+      endCall(false);
     };
   }, [appointment, supabase, userId]);
 
@@ -372,6 +421,12 @@ export default function AppointmentConnectPage() {
                 {connectionState}
               </span>
             </div>
+            {connectionState === "connecting" && !callEnded && (
+              <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                <span className="mr-2 inline-flex h-2 w-2 animate-pulse rounded-full bg-amber-500" />
+                Wait for {counterpartName} to connect, please wait...
+              </div>
+            )}
             <div className="grid gap-4 md:grid-cols-2">
               <div className="overflow-hidden rounded-2xl border border-zinc-200 bg-zinc-900">
                 <video
@@ -390,6 +445,21 @@ export default function AppointmentConnectPage() {
                   className="h-full w-full object-cover"
                 />
               </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                className="rounded-full bg-red-600 px-4 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-white transition hover:bg-red-700 disabled:cursor-not-allowed disabled:bg-red-300"
+                onClick={() => endCall(true)}
+                disabled={callEnded}
+              >
+                End call
+              </button>
+              {callEnded && (
+                <span className="text-xs uppercase tracking-[0.2em] text-zinc-400">
+                  Call ended
+                </span>
+              )}
             </div>
             <p className="text-xs text-zinc-500">
               Keep this tab open while connected. Audio/video requires browser
