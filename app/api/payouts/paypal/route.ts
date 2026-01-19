@@ -100,7 +100,7 @@ export async function POST(request: Request) {
   if (requestError || !requestRow) {
     const host = supabaseUrl ? new URL(supabaseUrl).host : null;
     const projectRef = host ? host.split(".")[0] : null;
-    const { count } = await supabase
+    const { count, error: countError } = await supabase
       .from("askmidwife_payout_requests")
       .select("id", { count: "exact", head: true });
     return NextResponse.json(
@@ -109,6 +109,8 @@ export async function POST(request: Request) {
         projectRef,
         requestId,
         rowCount: count ?? 0,
+        requestError: requestError?.message ?? null,
+        countError: countError?.message ?? null,
       },
       { status: 404 },
     );
