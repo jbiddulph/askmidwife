@@ -7,6 +7,7 @@ const paypalClientId = process.env.PAYPAL_CLIENT_ID;
 const paypalClientSecret = process.env.PAYPAL_CLIENT_SECRET;
 const paypalApiBase =
   process.env.PAYPAL_API_BASE ?? "https://api-m.sandbox.paypal.com";
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 
 type PaypalPayload = {
   requestId: string;
@@ -26,6 +27,15 @@ type PaypalPayoutResponse = {
 };
 
 export async function POST(request: Request) {
+  if (supabaseUrl) {
+    const host = new URL(supabaseUrl).host;
+    const projectRef = host.split(".")[0];
+    console.log("[paypal payout] supabase host:", host);
+    console.log("[paypal payout] supabase project ref:", projectRef);
+  } else {
+    console.log("[paypal payout] NEXT_PUBLIC_SUPABASE_URL is missing.");
+  }
+
   if (!paypalClientId || !paypalClientSecret) {
     return NextResponse.json(
       { error: "Missing PAYPAL_CLIENT_ID or PAYPAL_CLIENT_SECRET." },

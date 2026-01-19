@@ -28,6 +28,8 @@ REVOKE ALL ON TABLE public.askmidwife_provider_availability FROM anon, authentic
 REVOKE ALL ON TABLE public.askmidwife_appointments FROM anon, authenticated;
 REVOKE ALL ON TABLE public.askmidwife_appointment_messages FROM anon, authenticated;
 REVOKE ALL ON TABLE public.askmidwife_appointment_payments FROM anon, authenticated;
+REVOKE ALL ON TABLE public.askmidwife_payout_requests FROM anon, authenticated;
+REVOKE ALL ON TABLE public.askmidwife_payout_payments FROM anon, authenticated;
 
 -- Re-grant all permissions
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.askmidwife_profiles TO anon, authenticated;
@@ -35,6 +37,8 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.askmidwife_provider_availab
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.askmidwife_appointments TO anon, authenticated;
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.askmidwife_appointment_messages TO anon, authenticated;
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.askmidwife_appointment_payments TO anon, authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.askmidwife_payout_requests TO anon, authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.askmidwife_payout_payments TO anon, authenticated;
 
 -- Verify grants were applied
 SELECT 

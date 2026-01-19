@@ -2,12 +2,22 @@ import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 
 type MarkPaidPayload = {
   requestId: string;
 };
 
 export async function POST(request: Request) {
+  if (supabaseUrl) {
+    const host = new URL(supabaseUrl).host;
+    const projectRef = host.split(".")[0];
+    console.log("[payout mark-paid] supabase host:", host);
+    console.log("[payout mark-paid] supabase project ref:", projectRef);
+  } else {
+    console.log("[payout mark-paid] NEXT_PUBLIC_SUPABASE_URL is missing.");
+  }
+
   const tokenHeader = request.headers.get("authorization") ?? "";
   const token = tokenHeader.startsWith("Bearer ")
     ? tokenHeader.slice("Bearer ".length)
