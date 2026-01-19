@@ -6,7 +6,10 @@ export const runtime = "nodejs";
 const paypalClientId = process.env.PAYPAL_CLIENT_ID;
 const paypalClientSecret = process.env.PAYPAL_CLIENT_SECRET;
 const paypalApiBase =
-  process.env.PAYPAL_API_BASE ?? "https://api-m.sandbox.paypal.com";
+  process.env.PAYPAL_API_BASE ??
+  (process.env.NODE_ENV === "production"
+    ? "https://api-m.paypal.com"
+    : "https://api-m.sandbox.paypal.com");
 const paypalWebhookId = process.env.PAYPAL_WEBHOOK_ID;
 
 type PaypalVerifyResponse = {
