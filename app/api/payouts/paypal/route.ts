@@ -57,7 +57,9 @@ export async function POST(request: Request) {
 
   const payload = (await request.json()) as PaypalPayload;
 
-  if (!payload?.requestId) {
+  const requestId = payload?.requestId?.trim();
+
+  if (!requestId) {
     return NextResponse.json(
       { error: "Missing payout request id." },
       { status: 400 },
@@ -92,16 +94,21 @@ export async function POST(request: Request) {
   const { data: requestRow, error: requestError } = await supabase
     .from("askmidwife_payout_requests")
     .select("id, provider_id, amount_gbp, paypal_email, status")
-    .eq("id", payload.requestId)
+    .eq("id", requestId)
     .maybeSingle();
 
   if (requestError || !requestRow) {
     const host = supabaseUrl ? new URL(supabaseUrl).host : null;
     const projectRef = host ? host.split(".")[0] : null;
+    const { count } = await supabase
+      .from("askmidwife_payout_requests")
+      .select("id", { count: "exact", head: true });
     return NextResponse.json(
       {
         error: "Payout request not found.",
         projectRef,
+        requestId,
+        rowCount: count ?? 0,
       },
       { status: 404 },
     );
