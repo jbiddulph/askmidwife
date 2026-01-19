@@ -212,16 +212,16 @@ export default function Home() {
       <div className="pointer-events-none absolute bottom-[-20%] right-[-10%] h-[360px] w-[360px] rounded-full bg-amber-200/70 blur-3xl" />
 
       <main className="relative mx-auto flex w-full max-w-6xl flex-col gap-10 lg:flex-row lg:gap-16">
-        <section className="flex flex-1 flex-col justify-between gap-10 rounded-[32px] border border-zinc-200/70 bg-white/80 p-10 shadow-[0_25px_80px_-60px_rgba(15,23,42,0.35)] backdrop-blur">
+        <section className="flex flex-1 flex-col justify-between gap-10 rounded-[32px] border border-zinc-300 bg-white p-10 shadow-[0_30px_90px_-60px_rgba(15,23,42,0.45)] backdrop-blur">
           <div className="space-y-6">
-            <div className="inline-flex items-center gap-3 rounded-full border border-emerald-200 bg-emerald-50 px-4 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-emerald-700">
+            <div className="inline-flex items-center gap-3 rounded-full border border-emerald-300 bg-emerald-100 px-4 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-emerald-800">
               Ask Midwife
             </div>
-            <h1 className="text-balance font-[var(--font-display)] text-4xl font-semibold leading-tight text-zinc-900 lg:text-5xl">
+            <h1 className="text-balance font-[var(--font-display)] text-4xl font-bold leading-tight text-zinc-900 lg:text-5xl">
               A calm, clinical space for pregnancy care and professional
               consults.
             </h1>
-            <p className="max-w-xl text-base text-zinc-600 lg:text-lg">
+            <p className="max-w-xl text-base font-medium text-zinc-700 lg:text-lg">
               Sign in to manage your care, track upcoming appointments, and
               connect with licensed doctors or nurses who know your journey.
             </p>
@@ -248,12 +248,14 @@ export default function Home() {
             ].map((item) => (
               <div
                 key={item.title}
-                className="rounded-2xl border border-zinc-200/70 bg-white px-5 py-4"
+                className="rounded-2xl border border-zinc-300 bg-white px-5 py-4 shadow-sm"
               >
-                <p className="text-sm font-semibold text-zinc-900">
+                <p className="text-sm font-bold text-zinc-900">
                   {item.title}
                 </p>
-                <p className="mt-2 text-sm text-zinc-500">{item.detail}</p>
+                <p className="mt-2 text-sm font-medium text-zinc-700">
+                  {item.detail}
+                </p>
               </div>
             ))}
           </div>
@@ -261,26 +263,26 @@ export default function Home() {
 
         <section className="flex w-full max-w-xl flex-col gap-6">
           {!userEmail && (
-            <div className="rounded-[28px] border border-zinc-200/70 bg-white p-8 shadow-[0_25px_70px_-55px_rgba(15,23,42,0.4)]">
+            <div className="rounded-[28px] border border-zinc-300 bg-white p-8 shadow-[0_30px_80px_-55px_rgba(15,23,42,0.5)]">
               <div className="space-y-3">
-                <p className="text-xs font-semibold uppercase tracking-[0.25em] text-zinc-500">
+                <p className="text-xs font-semibold uppercase tracking-[0.25em] text-zinc-700">
                   Access portal
                 </p>
-                <h2 className="font-[var(--font-display)] text-2xl font-semibold text-zinc-900">
+                <h2 className="font-[var(--font-display)] text-2xl font-bold text-zinc-900">
                   {mode === "sign-in" ? "Welcome back" : "Create your account"}
                 </h2>
-                <p className="text-sm text-zinc-500">
+                <p className="text-sm font-medium text-zinc-700">
                   Secure sign in or create an account in seconds.
                 </p>
               </div>
 
-              <div className="mt-6 flex gap-2 rounded-full border border-zinc-200 bg-zinc-50 p-1">
+              <div className="mt-6 flex gap-2 rounded-full border border-zinc-300 bg-zinc-50 p-1 shadow-inner">
                 <button
                   type="button"
-                  className={`flex-1 rounded-full px-4 py-2 text-sm font-semibold transition ${
+                  className={`flex-1 rounded-full px-4 py-2 text-sm font-bold transition ${
                     mode === "sign-in"
-                      ? "bg-emerald-600 text-white shadow-sm"
-                      : "text-zinc-600"
+                      ? "bg-emerald-600 text-white shadow-md"
+                      : "text-zinc-700"
                   }`}
                   onClick={() => setMode("sign-in")}
                 >
@@ -288,10 +290,10 @@ export default function Home() {
                 </button>
                 <button
                   type="button"
-                  className={`flex-1 rounded-full px-4 py-2 text-sm font-semibold transition ${
+                  className={`flex-1 rounded-full px-4 py-2 text-sm font-bold transition ${
                     mode === "sign-up"
-                      ? "bg-emerald-600 text-white shadow-sm"
-                      : "text-zinc-600"
+                      ? "bg-emerald-600 text-white shadow-md"
+                      : "text-zinc-700"
                   }`}
                   onClick={() => setMode("sign-up")}
                 >
@@ -300,24 +302,24 @@ export default function Home() {
               </div>
 
               <form className="mt-6 flex flex-col gap-4" onSubmit={handleSubmit}>
-                <label className="flex flex-col gap-2 text-sm font-medium text-zinc-700">
+                <label className="flex flex-col gap-2 text-sm font-semibold text-zinc-800">
                   Email address
                   <input
                     type="email"
                     name="email"
-                    className="rounded-2xl border border-zinc-200 bg-white px-4 py-3 text-base outline-none ring-emerald-200 transition focus:ring-2"
+                    className="rounded-2xl border border-zinc-300 bg-white px-4 py-3 text-base outline-none ring-emerald-200 transition focus:ring-2"
                     autoComplete="email"
                     value={email}
                     onChange={(event) => setEmail(event.target.value)}
                   />
                 </label>
 
-                <label className="flex flex-col gap-2 text-sm font-medium text-zinc-700">
+                <label className="flex flex-col gap-2 text-sm font-semibold text-zinc-800">
                   Password
                   <input
                     type="password"
                     name="password"
-                    className="rounded-2xl border border-zinc-200 bg-white px-4 py-3 text-base outline-none ring-emerald-200 transition focus:ring-2"
+                    className="rounded-2xl border border-zinc-300 bg-white px-4 py-3 text-base outline-none ring-emerald-200 transition focus:ring-2"
                     autoComplete={
                       mode === "sign-in" ? "current-password" : "new-password"
                     }
@@ -328,7 +330,7 @@ export default function Home() {
 
                 <button
                   type="submit"
-                  className="rounded-2xl bg-emerald-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-emerald-700"
+                  className="rounded-2xl bg-emerald-600 px-4 py-3 text-sm font-bold text-white shadow-md transition hover:bg-emerald-700"
                   disabled={status.type === "loading"}
                 >
                   {mode === "sign-in" ? "Sign in" : "Create account"}
@@ -349,16 +351,16 @@ export default function Home() {
             </div>
           )}
 
-          <div className="rounded-[28px] border border-zinc-200/70 bg-white p-6">
+          <div className="rounded-[28px] border border-zinc-300 bg-white p-6 shadow-sm">
             <div className="flex items-center justify-between gap-4">
               <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.25em] text-zinc-500">
+                <p className="text-xs font-semibold uppercase tracking-[0.25em] text-zinc-700">
                   Current session
                 </p>
-                <p className="mt-2 text-lg font-semibold text-zinc-900">
+                <p className="mt-2 text-lg font-bold text-zinc-900">
                   {userEmail ?? "Not signed in"}
                 </p>
-                <p className="text-sm text-zinc-500">
+                <p className="text-sm font-medium text-zinc-700">
                   {userEmail
                     ? "You can now manage your profile and bookings."
                     : "Sign in to unlock scheduling and consultations."}
