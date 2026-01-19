@@ -96,8 +96,13 @@ export async function POST(request: Request) {
     .maybeSingle();
 
   if (requestError || !requestRow) {
+    const host = supabaseUrl ? new URL(supabaseUrl).host : null;
+    const projectRef = host ? host.split(".")[0] : null;
     return NextResponse.json(
-      { error: "Payout request not found." },
+      {
+        error: "Payout request not found.",
+        projectRef,
+      },
       { status: 404 },
     );
   }
@@ -203,4 +208,8 @@ export async function POST(request: Request) {
   }
 
   return NextResponse.json({ status: normalizedStatus });
+}
+
+export async function GET() {
+  return NextResponse.json({ ok: true });
 }
