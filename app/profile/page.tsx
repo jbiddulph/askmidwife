@@ -43,12 +43,22 @@ type Profile = {
   display_name: string | null;
   role: Role;
   hourly_pay_gbp: number | null;
+  paypal_email: string | null;
   created_at: string;
 };
 
 type Payment = {
   provider_earnings_gbp: number;
   status: "pending" | "paid" | "refunded";
+};
+
+type PayoutRequest = {
+  id: string;
+  provider_id: string;
+  amount_gbp: number;
+  paypal_email: string | null;
+  status: "pending" | "paid" | "rejected";
+  created_at: string;
 };
 
 type Status = {
@@ -77,6 +87,7 @@ function PaymentConfirmation({ userId }: { userId: string | null }) {
 }
 
 type CalendarTab = "month" | "week" | "day";
+type ProfileTab = "profile" | "availability" | "meetings";
 
 type TimeSlot = {
   hour: number;
@@ -97,6 +108,13 @@ const formatCurrency = (value: number) =>
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format(value);
+
+const getDurationMinutes = (appointment: Appointment) =>
+  Math.round(
+    (new Date(appointment.ends_at).getTime() -
+      new Date(appointment.starts_at).getTime()) /
+      60000,
+  );
 
 const toIso = (value: string) => new Date(value).toISOString();
 
@@ -200,7 +218,7 @@ const isSlotWithinInterval = (
   });
 };
 
-const earliestMinute = 7 * 60 + 30;
+const earliestMinute = 9 * 60;
 const latestMinute = 18 * 60;
 
 const isWithinOperatingHours = (date: Date) => {
@@ -254,6 +272,7 @@ export default function ProfilePage() {
   const [formName, setFormName] = useState("");
   const [formRole, setFormRole] = useState<Role>("client");
   const [formHourlyPay, setFormHourlyPay] = useState("");
+  const [formPaypalEmail, setFormPaypalEmail] = useState("");
   const [profileStatus, setProfileStatus] = useState<Status>({
     type: "idle",
   });
@@ -268,6 +287,17 @@ export default function ProfilePage() {
   const [availabilityStart, setAvailabilityStart] = useState("");
   const [availabilityEnd, setAvailabilityEnd] = useState("");
   const [availabilityBlocked, setAvailabilityBlocked] = useState(false);
+  const [bulkRangeStart, setBulkRangeStart] = useState("");
+  const [bulkRangeEnd, setBulkRangeEnd] = useState("");
+  const [bulkWeekdays, setBulkWeekdays] = useState<boolean[]>([
+    true,
+    true,
+    true,
+    true,
+    true,
+    false,
+    false,
+  ]);
   const [loadingAvailability, setLoadingAvailability] = useState(false);
   const [medicalCalendarTab, setMedicalCalendarTab] =
     useState<CalendarTab>("month");
@@ -286,6 +316,9 @@ export default function ProfilePage() {
   const [appointmentDrafts, setAppointmentDrafts] = useState<
     Record<string, { starts_at: string; ends_at: string; reason: string }>
   >({});
+  const [adminStatusDrafts, setAdminStatusDrafts] = useState<
+    Record<string, AppointmentStatus>
+  >({});
   const [profileLookup, setProfileLookup] = useState<Record<string, Profile>>(
     {},
   );
@@ -302,10 +335,37 @@ export default function ProfilePage() {
     available: number;
     pending: number;
   }>({ available: 0, pending: 0 });
+  const [payoutRequestStatus, setPayoutRequestStatus] = useState<Status>({
+    type: "idle",
+  });
+  const [payoutRequests, setPayoutRequests] = useState<PayoutRequest[]>([]);
+  const [loadingPayoutRequests, setLoadingPayoutRequests] = useState(false);
+  const [providerPendingPayout, setProviderPendingPayout] =
+    useState<PayoutRequest | null>(null);
+  const [profileTab, setProfileTab] = useState<ProfileTab>("profile");
 
-  const daySlots = useMemo(() => createTimeSlots(7, 18, 30, 30), []);
+  const daySlots = useMemo(() => createTimeSlots(9, 18, 30, 0), []);
   const confirmedAppointments = useMemo(
-    () => appointments.filter((appointment) => appointment.status === "confirmed"),
+    () =>
+      appointments.filter((appointment) => appointment.status === "confirmed"),
+    [appointments],
+  );
+  const appointmentIsPast = (appointment: Appointment) =>
+    new Date(appointment.starts_at).getTime() < Date.now();
+  const upcomingAppointments = useMemo(
+    () =>
+      appointments.filter(
+        (appointment) =>
+          appointment.status !== "completed" && !appointmentIsPast(appointment),
+      ),
+    [appointments],
+  );
+  const completedAppointments = useMemo(
+    () =>
+      appointments.filter(
+        (appointment) =>
+          appointment.status === "completed" || appointmentIsPast(appointment),
+      ),
     [appointments],
   );
 
@@ -317,6 +377,7 @@ export default function ProfilePage() {
   const currentRole = profile?.role ?? formRole;
   const showMedicalTools = currentRole === "medical" || currentRole === "admin";
   const showClientTools = currentRole === "client" || currentRole === "admin";
+  const isAdmin = currentRole === "admin";
 
   const selectedRole =
     roleOptions.find((option) => option.value === formRole) ?? roleOptions[1];
@@ -395,7 +456,9 @@ export default function ProfilePage() {
       setLoadingProfile(true);
       const { data, error } = await supabase
         .from("askmidwife_profiles")
-        .select("id, email, display_name, role, hourly_pay_gbp, created_at")
+        .select(
+          "id, email, display_name, role, hourly_pay_gbp, paypal_email, created_at",
+        )
         .eq("id", userId)
         .maybeSingle();
 
@@ -411,6 +474,7 @@ export default function ProfilePage() {
           ? Number(data.hourly_pay_gbp).toFixed(2)
           : "",
       );
+      setFormPaypalEmail(data?.paypal_email ?? "");
       setLoadingProfile(false);
     };
 
@@ -480,6 +544,78 @@ export default function ProfilePage() {
   }, [supabase, userId, showMedicalTools]);
 
   useEffect(() => {
+    if (!userId || !showMedicalTools) {
+      setProviderPendingPayout(null);
+      return;
+    }
+
+    const loadProviderPayout = async () => {
+      const { data } = await supabase
+        .from("askmidwife_payout_requests")
+        .select("id, provider_id, amount_gbp, paypal_email, status, created_at")
+        .eq("provider_id", userId)
+        .eq("status", "pending")
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (data) {
+        setProviderPendingPayout(data as PayoutRequest);
+      } else {
+        setProviderPendingPayout(null);
+      }
+    };
+
+    loadProviderPayout();
+  }, [supabase, userId, showMedicalTools]);
+
+  useEffect(() => {
+    if (profile?.role !== "admin") {
+      setPayoutRequests([]);
+      return;
+    }
+
+    const loadPayoutRequests = async () => {
+      setLoadingPayoutRequests(true);
+      const { data, error } = await supabase
+        .from("askmidwife_payout_requests")
+        .select("id, provider_id, amount_gbp, paypal_email, status, created_at")
+        .eq("status", "pending")
+        .order("created_at", { ascending: false });
+
+      if (!error) {
+        const requests = (data as PayoutRequest[]) ?? [];
+        setPayoutRequests(requests);
+
+        const providerIds = Array.from(
+          new Set(requests.map((request) => request.provider_id)),
+        );
+        if (providerIds.length) {
+          const { data: profileData } = await supabase
+            .from("askmidwife_profiles")
+            .select(
+              "id, email, display_name, role, hourly_pay_gbp, paypal_email, created_at",
+            )
+            .in("id", providerIds);
+
+          if (profileData) {
+            setProfileLookup((prev) => {
+              const next = { ...prev };
+              profileData.forEach((item) => {
+                next[item.id] = item;
+              });
+              return next;
+            });
+          }
+        }
+      }
+      setLoadingPayoutRequests(false);
+    };
+
+    loadPayoutRequests();
+  }, [supabase, profile?.role]);
+
+  useEffect(() => {
     if (!userId) {
       setProviders([]);
       return;
@@ -488,7 +624,9 @@ export default function ProfilePage() {
     const loadProviders = async () => {
       const { data, error } = await supabase
         .from("askmidwife_profiles")
-        .select("id, email, display_name, role, hourly_pay_gbp, created_at")
+        .select(
+          "id, email, display_name, role, hourly_pay_gbp, paypal_email, created_at",
+        )
         .eq("role", "medical")
         .order("display_name", { ascending: true });
 
@@ -498,7 +636,7 @@ export default function ProfilePage() {
       }
 
       setProviders(data ?? []);
-      setSelectedProviderId((prev) => prev || data?.[0]?.id || "");
+      setSelectedProviderId((prev) => prev || "");
     };
 
     loadProviders();
@@ -537,24 +675,75 @@ export default function ProfilePage() {
 
     const loadAppointments = async () => {
       setLoadingAppointments(true);
-      const query = supabase
-        .from("askmidwife_appointments")
-        .select(
-          "id, patient_id, provider_id, starts_at, ends_at, status, notes, proposed_reason, created_at",
-        )
-        .order("starts_at", { ascending: true });
+      let appointmentsData: Appointment[] = [];
 
-      const { data, error } = showMedicalTools
-        ? await query.eq("provider_id", userId)
-        : await query.eq("patient_id", userId);
+      if (isAdmin) {
+        const { data: sessionData, error: sessionError } =
+          await supabase.auth.getSession();
 
-      if (error) {
-        setScheduleStatus({ type: "error", message: error.message });
-        setLoadingAppointments(false);
-        return;
+        if (sessionError || !sessionData.session?.access_token) {
+          setScheduleStatus({
+            type: "error",
+            message: "Sign in again to load meetings.",
+          });
+          setLoadingAppointments(false);
+          return;
+        }
+
+        const response = await fetch("/api/admin/appointments", {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${sessionData.session.access_token}`,
+          },
+        });
+
+        if (!response.ok) {
+          const payload = (await response.json()) as { error?: string };
+          setScheduleStatus({
+            type: "error",
+            message: payload.error ?? "Unable to load appointments.",
+          });
+          setLoadingAppointments(false);
+          return;
+        }
+
+        const payload = (await response.json()) as {
+          appointments?: Appointment[];
+          profiles?: Profile[];
+        };
+
+        appointmentsData = payload.appointments ?? [];
+
+        if (payload.profiles?.length) {
+          setProfileLookup((prev) => {
+            const next = { ...prev };
+            payload.profiles?.forEach((item) => {
+              next[item.id] = item;
+            });
+            return next;
+          });
+        }
+      } else {
+        const query = supabase
+          .from("askmidwife_appointments")
+          .select(
+            "id, patient_id, provider_id, starts_at, ends_at, status, notes, proposed_reason, created_at",
+          )
+          .order("starts_at", { ascending: true });
+
+        const { data, error } = showMedicalTools
+          ? await query.eq("provider_id", userId)
+          : await query.eq("patient_id", userId);
+
+        if (error) {
+          setScheduleStatus({ type: "error", message: error.message });
+          setLoadingAppointments(false);
+          return;
+        }
+
+        appointmentsData = data ?? [];
       }
 
-      const appointmentsData = data ?? [];
       setAppointments(appointmentsData);
       setAppointmentDrafts((prev) => {
         const next = { ...prev };
@@ -569,30 +758,43 @@ export default function ProfilePage() {
         });
         return next;
       });
+      setAdminStatusDrafts((prev) => {
+        const next = { ...prev };
+        appointmentsData.forEach((appointment) => {
+          if (!next[appointment.id]) {
+            next[appointment.id] = appointment.status;
+          }
+        });
+        return next;
+      });
 
-      const profileIds = Array.from(
-        new Set(
-          appointmentsData.flatMap((appointment) => [
-            appointment.patient_id,
-            appointment.provider_id,
-          ]),
-        ),
-      );
+      if (!isAdmin) {
+        const profileIds = Array.from(
+          new Set(
+            appointmentsData.flatMap((appointment) => [
+              appointment.patient_id,
+              appointment.provider_id,
+            ]),
+          ),
+        );
 
-      if (profileIds.length) {
-        const { data: profileData } = await supabase
-          .from("askmidwife_profiles")
-          .select("id, email, display_name, role, hourly_pay_gbp, created_at")
-          .in("id", profileIds);
+        if (profileIds.length) {
+          const { data: profileData } = await supabase
+            .from("askmidwife_profiles")
+            .select(
+              "id, email, display_name, role, hourly_pay_gbp, paypal_email, created_at",
+            )
+            .in("id", profileIds);
 
-        if (profileData) {
-          setProfileLookup((prev) => {
-            const next = { ...prev };
-            profileData.forEach((item) => {
-              next[item.id] = item;
+          if (profileData) {
+            setProfileLookup((prev) => {
+              const next = { ...prev };
+              profileData.forEach((item) => {
+                next[item.id] = item;
+              });
+              return next;
             });
-            return next;
-          });
+          }
         }
       }
 
@@ -600,7 +802,7 @@ export default function ProfilePage() {
     };
 
     loadAppointments();
-  }, [supabase, userId, showClientTools, showMedicalTools]);
+  }, [supabase, userId, showClientTools, showMedicalTools, isAdmin]);
 
   const handleSave = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -636,6 +838,7 @@ export default function ProfilePage() {
       display_name: formName.trim(),
       role: formRole,
       hourly_pay_gbp: formRole === "medical" ? hourlyPayValue : null,
+      paypal_email: formRole === "medical" ? formPaypalEmail.trim() || null : null,
     };
 
     const { error } = profile
@@ -652,6 +855,61 @@ export default function ProfilePage() {
 
     setProfileStatus({ type: "success", message: "Profile saved." });
     setProfile((prev) => (prev ? { ...prev, ...payload } : (payload as Profile)));
+  };
+
+  const handleRequestPayout = async () => {
+    setPayoutRequestStatus({ type: "loading" });
+
+    if (!userId) {
+      setPayoutRequestStatus({
+        type: "error",
+        message: "You need to sign in first.",
+      });
+      return;
+    }
+
+    if (!formPaypalEmail.trim()) {
+      setPayoutRequestStatus({
+        type: "error",
+        message: "Add a PayPal email before requesting a payout.",
+      });
+      return;
+    }
+
+    if (earningsSummary.available <= 0) {
+      setPayoutRequestStatus({
+        type: "error",
+        message: "No available balance to request.",
+      });
+      return;
+    }
+
+    const payload = {
+      provider_id: userId,
+      amount_gbp: Number(earningsSummary.available.toFixed(2)),
+      paypal_email: formPaypalEmail.trim(),
+      status: "pending",
+    };
+
+    const { data, error } = await supabase
+      .from("askmidwife_payout_requests")
+      .insert(payload)
+      .select("id, provider_id, amount_gbp, paypal_email, status, created_at")
+      .maybeSingle();
+
+    if (error) {
+      setPayoutRequestStatus({ type: "error", message: error.message });
+      return;
+    }
+
+    if (data) {
+      setProviderPendingPayout(data);
+    }
+
+    setPayoutRequestStatus({
+      type: "success",
+      message: "Payout request submitted for admin approval.",
+    });
   };
 
   const handleAddAvailability = async (event: FormEvent<HTMLFormElement>) => {
@@ -688,7 +946,7 @@ export default function ProfilePage() {
     if (!isWithinOperatingHours(startDate) || !isWithinOperatingHours(endDate)) {
       setAvailabilityStatus({
         type: "error",
-        message: "Availability must be between 07:30 and 18:00.",
+        message: "Availability must be between 09:00 and 18:00.",
       });
       return;
     }
@@ -718,6 +976,112 @@ export default function ProfilePage() {
     setAvailabilityEnd("");
     setAvailabilityBlocked(false);
     setAvailabilityStatus({ type: "success", message: "Availability added." });
+  };
+
+  const handleBulkAvailability = async (isBlocked: boolean) => {
+    setAvailabilityStatus({ type: "loading" });
+
+    if (!userId) {
+      setAvailabilityStatus({
+        type: "error",
+        message: "You need to sign in first.",
+      });
+      return;
+    }
+
+    if (!bulkRangeStart || !bulkRangeEnd) {
+      setAvailabilityStatus({
+        type: "error",
+        message: "Select a start and end date for the range.",
+      });
+      return;
+    }
+
+    const startDate = new Date(bulkRangeStart);
+    const endDate = new Date(bulkRangeEnd);
+
+    if (endDate < startDate) {
+      setAvailabilityStatus({
+        type: "error",
+        message: "End date must be the same day or later than start date.",
+      });
+      return;
+    }
+
+    if (!bulkWeekdays.some(Boolean)) {
+      setAvailabilityStatus({
+        type: "error",
+        message: "Select at least one weekday.",
+      });
+      return;
+    }
+
+    const payload = [];
+    const cursor = new Date(startDate);
+    while (cursor <= endDate) {
+      const weekdayIndex = (cursor.getDay() + 6) % 7;
+      if (bulkWeekdays[weekdayIndex]) {
+        const dayStart = new Date(
+          cursor.getFullYear(),
+          cursor.getMonth(),
+          cursor.getDate(),
+          9,
+          0,
+          0,
+          0,
+        );
+        const dayEnd = new Date(
+          cursor.getFullYear(),
+          cursor.getMonth(),
+          cursor.getDate(),
+          18,
+          0,
+          0,
+          0,
+        );
+        payload.push({
+          provider_id: userId,
+          starts_at: dayStart.toISOString(),
+          ends_at: dayEnd.toISOString(),
+          is_blocked: isBlocked,
+        });
+      }
+      cursor.setDate(cursor.getDate() + 1);
+    }
+
+    if (!payload.length) {
+      setAvailabilityStatus({
+        type: "error",
+        message: "No dates matched the selected weekdays.",
+      });
+      return;
+    }
+
+    const { data, error } = await supabase
+      .from("askmidwife_provider_availability")
+      .insert(payload)
+      .select("id, provider_id, starts_at, ends_at, is_blocked, created_at");
+
+    if (error) {
+      setAvailabilityStatus({ type: "error", message: error.message });
+      return;
+    }
+
+    if (data?.length) {
+      setAvailability((prev) =>
+        [...prev, ...data].sort(
+          (a, b) =>
+            new Date(a.starts_at).getTime() - new Date(b.starts_at).getTime(),
+        ),
+      );
+    }
+
+    setAvailabilityStatus({
+      type: "success",
+      message: isBlocked
+        ? "Bulk unavailability saved."
+        : "Bulk availability saved.",
+    });
   };
 
   const handleRemoveAvailability = async (availabilityId: string) => {
@@ -944,6 +1308,80 @@ export default function ProfilePage() {
     }
   };
 
+  const handleAdminUpdate = async (appointmentId: string) => {
+    const draft = appointmentDrafts[appointmentId];
+    if (!draft?.starts_at || !draft?.ends_at) {
+      setScheduleStatus({
+        type: "error",
+        message: "Provide a start and end time.",
+      });
+      return;
+    }
+
+    const status = adminStatusDrafts[appointmentId];
+    if (!status) {
+      setScheduleStatus({
+        type: "error",
+        message: "Select a status for the appointment.",
+      });
+      return;
+    }
+
+    if (new Date(draft.ends_at) <= new Date(draft.starts_at)) {
+      setScheduleStatus({
+        type: "error",
+        message: "End time must be after the start time.",
+      });
+      return;
+    }
+
+    setScheduleStatus({ type: "loading" });
+
+    const { data: sessionData, error: sessionError } =
+      await supabase.auth.getSession();
+
+    if (sessionError || !sessionData.session?.access_token) {
+      setScheduleStatus({
+        type: "error",
+        message: "Sign in again to update the appointment.",
+      });
+      return;
+    }
+
+    const response = await fetch("/api/admin/appointments/update", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${sessionData.session.access_token}`,
+      },
+      body: JSON.stringify({
+        appointmentId,
+        startsAt: toIso(draft.starts_at),
+        endsAt: toIso(draft.ends_at),
+        status,
+      }),
+    });
+
+    if (!response.ok) {
+      const payload = (await response.json()) as { error?: string };
+      setScheduleStatus({
+        type: "error",
+        message: payload.error ?? "Unable to update appointment.",
+      });
+      return;
+    }
+
+    const payload = (await response.json()) as { appointment?: Appointment };
+    if (payload.appointment) {
+      setAppointments((prev) =>
+        prev.map((item) =>
+          item.id === appointmentId ? payload.appointment! : item,
+        ),
+      );
+    }
+    setScheduleStatus({ type: "success", message: "Appointment updated." });
+  };
+
   const handleSignOut = async () => {
     setProfileStatus({ type: "loading" });
     const { error } = await supabase.auth.signOut();
@@ -988,60 +1426,104 @@ export default function ProfilePage() {
           </div>
         </header>
 
-        <section className="grid gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
-          <form
-            className="flex flex-col gap-6 rounded-[28px] border border-zinc-200/70 bg-white p-8 shadow-[0_25px_70px_-60px_rgba(15,23,42,0.35)]"
-            onSubmit={handleSave}
-          >
-            <div className="space-y-2">
-              <h2 className="font-[var(--font-display)] text-2xl font-semibold text-zinc-900">
-                Profile details
-              </h2>
-              <p className="text-sm text-zinc-500">
-                This data is stored in `askmidwife_profiles`.
-              </p>
-            </div>
+        <section className="flex flex-wrap gap-3">
+          {(isAdmin
+            ? (["profile", "meetings"] as ProfileTab[])
+            : (["profile", "availability"] as ProfileTab[])
+          ).map((tab) => {
+            const label =
+              tab === "availability" && showClientTools && !showMedicalTools
+                ? "Book a consultation"
+                : tab === "meetings"
+                ? "Upcoming meetings"
+                : tab;
+            return (
+              <button
+                key={tab}
+              type="button"
+              className={`rounded-full px-4 py-2 text-xs font-semibold uppercase tracking-[0.2em] transition ${
+                profileTab === tab
+                  ? "bg-emerald-600 text-white"
+                  : "border border-zinc-200 text-zinc-500 hover:border-zinc-400"
+              }`}
+              onClick={() => setProfileTab(tab)}
+            >
+              {label}
+            </button>
+          );
+          })}
+        </section>
 
-            <label className="flex flex-col gap-2 text-sm font-medium text-zinc-700">
-              Display name
-              <input
-                type="text"
-                className="rounded-2xl border border-zinc-200 bg-white px-4 py-3 text-base outline-none ring-emerald-200 transition focus:ring-2"
-                value={formName}
-                onChange={(event) => setFormName(event.target.value)}
-              />
-            </label>
+        {profileTab === "profile" && (
+          <section className="grid gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+            <form
+              className="flex flex-col gap-6 rounded-[28px] border border-zinc-200/70 bg-white p-8 shadow-[0_25px_70px_-60px_rgba(15,23,42,0.35)]"
+              onSubmit={handleSave}
+            >
+              <div className="space-y-2">
+                <h2 className="font-[var(--font-display)] text-2xl font-semibold text-zinc-900">
+                  Profile details
+                </h2>
+                <p className="text-sm text-zinc-500">
+                  This data is stored in `askmidwife_profiles`.
+                </p>
+              </div>
 
-            <label className="flex flex-col gap-2 text-sm font-medium text-zinc-700">
-              Role
-              <select
-                className="rounded-2xl border border-zinc-200 bg-white px-4 py-3 text-base outline-none ring-emerald-200 transition focus:ring-2"
-                value={formRole}
-                onChange={(event) => setFormRole(event.target.value as Role)}
-              >
-                {availableRoles.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </label>
+              <label className="flex flex-col gap-2 text-sm font-medium text-zinc-700">
+                Display name
+                <input
+                  type="text"
+                  className="rounded-2xl border border-zinc-200 bg-white px-4 py-3 text-base outline-none ring-emerald-200 transition focus:ring-2"
+                  value={formName}
+                  onChange={(event) => setFormName(event.target.value)}
+                />
+              </label>
+
+              <label className="flex flex-col gap-2 text-sm font-medium text-zinc-700">
+                Role
+                <select
+                  className="rounded-2xl border border-zinc-200 bg-white px-4 py-3 text-base outline-none ring-emerald-200 transition focus:ring-2"
+                  value={formRole}
+                  onChange={(event) => setFormRole(event.target.value as Role)}
+                >
+                  {availableRoles.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
 
             {formRole === "medical" && (
               <label className="flex flex-col gap-2 text-sm font-medium text-zinc-700">
                 Hourly pay (GBP)
                 <input
                   type="number"
-                  inputMode="decimal"
-                  min="0"
-                  step="0.01"
-                  placeholder="24.00"
-                  className="rounded-2xl border border-zinc-200 bg-white px-4 py-3 text-base outline-none ring-emerald-200 transition focus:ring-2"
-                  value={formHourlyPay}
-                  onChange={(event) => setFormHourlyPay(event.target.value)}
-                />
+                    inputMode="decimal"
+                    min="0"
+                    step="0.01"
+                    placeholder="24.00"
+                    className="rounded-2xl border border-zinc-200 bg-white px-4 py-3 text-base outline-none ring-emerald-200 transition focus:ring-2"
+                    value={formHourlyPay}
+                    onChange={(event) => setFormHourlyPay(event.target.value)}
+                  />
                 <span className="text-xs text-zinc-500">
                   Patients are charged by the hour; platform fee is 15%.
+                </span>
+              </label>
+            )}
+
+            {formRole === "medical" && (
+              <label className="flex flex-col gap-2 text-sm font-medium text-zinc-700">
+                PayPal email
+                <input
+                  type="email"
+                  className="rounded-2xl border border-zinc-200 bg-white px-4 py-3 text-base outline-none ring-emerald-200 transition focus:ring-2"
+                  value={formPaypalEmail}
+                  onChange={(event) => setFormPaypalEmail(event.target.value)}
+                />
+                <span className="text-xs text-zinc-500">
+                  Used for payout requests after admin approval.
                 </span>
               </label>
             )}
@@ -1051,30 +1533,30 @@ export default function ProfilePage() {
               <p className="mt-1 text-emerald-700/90">
                 {selectedRole.description}
               </p>
-              <ul className="mt-3 list-disc pl-5 text-emerald-700/90">
-                {selectedRole.highlights.map((item) => (
-                  <li key={item}>{item}</li>
-                ))}
-              </ul>
-            </div>
+                <ul className="mt-3 list-disc pl-5 text-emerald-700/90">
+                  {selectedRole.highlights.map((item) => (
+                    <li key={item}>{item}</li>
+                  ))}
+                </ul>
+              </div>
 
-            <div className="flex flex-wrap gap-3">
-              <button
-                type="submit"
-                className="rounded-2xl bg-emerald-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-emerald-300"
-                disabled={profileStatus.type === "loading" || loadingProfile}
-              >
-                {profile ? "Update profile" : "Create profile"}
-              </button>
-              <button
-                type="button"
-                className="rounded-2xl border border-zinc-200 px-4 py-3 text-sm font-semibold text-zinc-600 transition hover:border-zinc-400 hover:text-zinc-900 disabled:cursor-not-allowed"
-                onClick={handleSignOut}
-                disabled={!userEmail || profileStatus.type === "loading"}
-              >
-                Sign out
-              </button>
-            </div>
+              <div className="flex flex-wrap gap-3">
+                <button
+                  type="submit"
+                  className="rounded-2xl bg-emerald-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-emerald-300"
+                  disabled={profileStatus.type === "loading" || loadingProfile}
+                >
+                  {profile ? "Update profile" : "Create profile"}
+                </button>
+                <button
+                  type="button"
+                  className="rounded-2xl border border-zinc-200 px-4 py-3 text-sm font-semibold text-zinc-600 transition hover:border-zinc-400 hover:text-zinc-900 disabled:cursor-not-allowed"
+                  onClick={handleSignOut}
+                  disabled={!userEmail || profileStatus.type === "loading"}
+                >
+                  Sign out
+                </button>
+              </div>
 
             {profileStatus.type !== "idle" && profileStatus.message && (
               <p
@@ -1087,31 +1569,72 @@ export default function ProfilePage() {
                 {profileStatus.message}
               </p>
             )}
+
+            {formRole === "medical" && (
+              <div className="rounded-2xl border border-zinc-200 bg-white p-4 text-sm text-zinc-700">
+                <p className="text-xs font-semibold uppercase tracking-[0.2em] text-zinc-500">
+                  Payouts
+                </p>
+                <p className="mt-2 text-sm text-zinc-600">
+                  Available balance:{" "}
+                  <span className="font-semibold text-zinc-900">
+                    {formatCurrency(earningsSummary.available)}
+                  </span>
+                </p>
+                {providerPendingPayout ? (
+                  <p className="mt-2 text-xs text-amber-700">
+                    Payout request pending approval.
+                  </p>
+                ) : (
+                  <button
+                    type="button"
+                    className="mt-3 rounded-full bg-emerald-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-emerald-300"
+                    onClick={handleRequestPayout}
+                    disabled={earningsSummary.available <= 0}
+                  >
+                    Request payout
+                  </button>
+                )}
+                {payoutRequestStatus.type !== "idle" &&
+                  payoutRequestStatus.message && (
+                    <p
+                      className={`mt-3 rounded-2xl border px-4 py-3 text-xs ${
+                        payoutRequestStatus.type === "error"
+                          ? "border-red-200 bg-red-50 text-red-700"
+                          : "border-emerald-200 bg-emerald-50 text-emerald-700"
+                      }`}
+                    >
+                      {payoutRequestStatus.message}
+                    </p>
+                  )}
+              </div>
+            )}
           </form>
 
-          <aside className="flex flex-col gap-4 rounded-[28px] border border-zinc-200/70 bg-white p-8 shadow-[0_25px_70px_-60px_rgba(15,23,42,0.35)]">
-            <p className="text-xs font-semibold uppercase tracking-[0.25em] text-zinc-500">
-              Role summaries
-            </p>
-            {roleOptions.map((option) => (
-              <div
-                key={option.value}
-                className="rounded-2xl border border-zinc-200/80 bg-zinc-50/60 p-4"
-              >
-                <p className="text-sm font-semibold text-zinc-900">
-                  {option.label}
-                </p>
-                <p className="text-sm text-zinc-500">{option.description}</p>
+            <aside className="flex flex-col gap-4 rounded-[28px] border border-zinc-200/70 bg-white p-8 shadow-[0_25px_70px_-60px_rgba(15,23,42,0.35)]">
+              <p className="text-xs font-semibold uppercase tracking-[0.25em] text-zinc-500">
+                Role summaries
+              </p>
+              {roleOptions.map((option) => (
+                <div
+                  key={option.value}
+                  className="rounded-2xl border border-zinc-200/80 bg-zinc-50/60 p-4"
+                >
+                  <p className="text-sm font-semibold text-zinc-900">
+                    {option.label}
+                  </p>
+                  <p className="text-sm text-zinc-500">{option.description}</p>
+                </div>
+              ))}
+              <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4 text-sm text-zinc-600">
+                Admin access should be granted via server-side workflows using the
+                service role key, not by client-side changes.
               </div>
-            ))}
-            <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4 text-sm text-zinc-600">
-              Admin access should be granted via server-side workflows using the
-              service role key, not by client-side changes.
-            </div>
-          </aside>
-        </section>
+            </aside>
+          </section>
+        )}
 
-        {(showMedicalTools || showClientTools) && (
+        {profileTab === "availability" && (showMedicalTools || showClientTools) && (
           <section className="grid gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
             {showMedicalTools && (
               <div className="flex flex-col gap-6 rounded-[28px] border border-zinc-200/70 bg-white p-8 shadow-[0_25px_70px_-60px_rgba(15,23,42,0.35)]">
@@ -1154,6 +1677,77 @@ export default function ProfilePage() {
                   {earningsStatus.message}
                 </p>
               )}
+            </div>
+
+            <div className="space-y-4 rounded-2xl border border-zinc-200/80 bg-white p-4">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.2em] text-zinc-500">
+                  Quick setup
+                </p>
+                <p className="mt-2 text-sm text-zinc-600">
+                  Add or block 09:00-18:00 availability across weeks or months.
+                </p>
+              </div>
+              <div className="grid gap-3 md:grid-cols-2">
+                <label className="flex flex-col gap-2 text-sm font-medium text-zinc-700">
+                  Range start
+                  <input
+                    type="date"
+                    className="rounded-2xl border border-zinc-200 bg-white px-4 py-3 text-base outline-none ring-emerald-200 transition focus:ring-2"
+                    value={bulkRangeStart}
+                    onChange={(event) => setBulkRangeStart(event.target.value)}
+                  />
+                </label>
+                <label className="flex flex-col gap-2 text-sm font-medium text-zinc-700">
+                  Range end
+                  <input
+                    type="date"
+                    className="rounded-2xl border border-zinc-200 bg-white px-4 py-3 text-base outline-none ring-emerald-200 transition focus:ring-2"
+                    value={bulkRangeEnd}
+                    onChange={(event) => setBulkRangeEnd(event.target.value)}
+                  />
+                </label>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {dayNames.map((day, index) => (
+                  <button
+                    key={day}
+                    type="button"
+                    className={`rounded-full border px-3 py-1 text-xs font-semibold transition ${
+                      bulkWeekdays[index]
+                        ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                        : "border-zinc-200 text-zinc-500 hover:border-zinc-400"
+                    }`}
+                    onClick={() =>
+                      setBulkWeekdays((prev) =>
+                        prev.map((value, idx) =>
+                          idx === index ? !value : value,
+                        ),
+                      )
+                    }
+                  >
+                    {day}
+                  </button>
+                ))}
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  className="rounded-full bg-emerald-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-emerald-700"
+                  onClick={() => handleBulkAvailability(false)}
+                  disabled={availabilityStatus.type === "loading"}
+                >
+                  Add 09:00-18:00 availability
+                </button>
+                <button
+                  type="button"
+                  className="rounded-full border border-amber-200 px-4 py-2 text-xs font-semibold text-amber-700 transition hover:border-amber-300 hover:text-amber-800"
+                  onClick={() => handleBulkAvailability(true)}
+                  disabled={availabilityStatus.type === "loading"}
+                >
+                  Block 09:00-18:00
+                </button>
+              </div>
             </div>
 
             <div
@@ -1415,42 +2009,6 @@ export default function ProfilePage() {
                     )}
                 </form>
 
-                <div className="space-y-3">
-                  {loadingAvailability ? (
-                    <p className="text-sm text-zinc-500">Loading availability…</p>
-                  ) : availability.length ? (
-                    availability.map((slot) => (
-                      <div
-                        key={slot.id}
-                        className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-zinc-200/80 bg-zinc-50/70 px-4 py-3"
-                      >
-                        <div>
-                          <p className="text-sm font-semibold text-zinc-900">
-                            {formatDateTime(slot.starts_at)} –{" "}
-                            {formatDateTime(slot.ends_at)}
-                          </p>
-                          <p className="text-xs text-zinc-500">
-                            {slot.is_blocked
-                              ? "Marked unavailable"
-                              : "Open for booking"}
-                          </p>
-                        </div>
-                        <button
-                          type="button"
-                          className="rounded-full border border-zinc-200 px-4 py-2 text-xs font-semibold text-zinc-600 transition hover:border-zinc-400 hover:text-zinc-900"
-                          onClick={() => handleRemoveAvailability(slot.id)}
-                        >
-                          Remove
-                        </button>
-                      </div>
-                    ))
-                  ) : (
-                    <p className="text-sm text-zinc-500">
-                      No availability added yet.
-                    </p>
-                  )}
-                </div>
-
               </div>
             )}
 
@@ -1466,77 +2024,70 @@ export default function ProfilePage() {
             </div>
 
             <div className="space-y-4 rounded-2xl border border-zinc-200/80 bg-zinc-50/70 p-4">
-              <div className="flex flex-wrap gap-2">
-                {(["month", "week", "day"] as CalendarTab[]).map((tab) => (
-                  <button
-                    key={tab}
-                    type="button"
-                    className={`rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] transition ${
-                      clientCalendarTab === tab
-                        ? "bg-emerald-600 text-white"
-                        : "border border-zinc-200 text-zinc-500 hover:border-zinc-400"
-                    }`}
-                    onClick={() => setClientCalendarTab(tab)}
-                  >
-                    {tab}
-                  </button>
-                ))}
+              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-zinc-500">
+                Medical professionals
+              </p>
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                {providers.map((provider) => {
+                  const label =
+                    provider.display_name || provider.email || provider.id;
+                  const isSelected = provider.id === selectedProviderId;
+
+                  return (
+                    <button
+                      key={provider.id}
+                      type="button"
+                      className={`rounded-2xl border px-4 py-4 text-left text-sm transition ${
+                        isSelected
+                          ? "border-emerald-500 bg-emerald-50 text-emerald-700"
+                          : "border-zinc-200 bg-white text-zinc-600 hover:border-emerald-300"
+                      }`}
+                      onClick={() => setSelectedProviderId(provider.id)}
+                    >
+                      <p className="font-semibold text-zinc-900">{label}</p>
+                      <p className="mt-2 text-xs text-zinc-500">
+                        {provider.hourly_pay_gbp != null
+                          ? `${formatCurrency(
+                              Number(provider.hourly_pay_gbp),
+                            )}/hr`
+                          : "Hourly rate not set"}
+                      </p>
+                    </button>
+                  );
+                })}
               </div>
+            </div>
 
-              {!selectedProviderId ? (
-                <p className="text-sm text-zinc-500">
-                  Select a clinician to view availability.
-                </p>
-              ) : (
-                <>
-                  {clientCalendarTab === "month" && (
-                    <div className="grid gap-2">
-                      <div className="grid grid-cols-7 gap-2 text-xs font-semibold text-zinc-500">
-                        {dayNames.map((day) => (
-                          <span key={day}>{day}</span>
-                        ))}
-                      </div>
-                      <div className="grid grid-cols-7 gap-2">
-                        {clientMonthGrid.map((day) => {
-                          const isCurrentMonth =
-                            day.getMonth() === clientSelectedDate.getMonth();
-                          const isSelected =
-                            day.toDateString() ===
-                            clientSelectedDate.toDateString();
-                          const hasOpen = providerAvailability.some((slot) =>
-                            isSlotOnDay(slot, day),
-                          );
+            {selectedProviderId && (
+              <div className="space-y-4 rounded-2xl border border-zinc-200/80 bg-zinc-50/70 p-4">
+                <div className="flex flex-wrap gap-2">
+                  {(["month", "week", "day"] as CalendarTab[]).map((tab) => (
+                    <button
+                      key={tab}
+                      type="button"
+                      className={`rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] transition ${
+                        clientCalendarTab === tab
+                          ? "bg-emerald-600 text-white"
+                          : "border border-zinc-200 text-zinc-500 hover:border-zinc-400"
+                      }`}
+                      onClick={() => setClientCalendarTab(tab)}
+                    >
+                      {tab}
+                    </button>
+                  ))}
+                </div>
 
-                          return (
-                            <button
-                              key={day.toISOString()}
-                              type="button"
-                              className={`flex flex-col items-center justify-center gap-1 rounded-xl border px-2 py-2 text-xs transition ${
-                                isSelected
-                                  ? "border-emerald-500 bg-emerald-50 text-emerald-700"
-                                  : "border-zinc-200 bg-white text-zinc-600 hover:border-emerald-300"
-                              } ${isCurrentMonth ? "" : "opacity-50"}`}
-                              onClick={() => {
-                                setClientSelectedDate(day);
-                                setClientCalendarTab("week");
-                              }}
-                            >
-                              <span className="font-semibold">
-                                {day.getDate()}
-                              </span>
-                              {hasOpen && (
-                                <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                              )}
-                            </button>
-                          );
-                        })}
-                      </div>
+                {clientCalendarTab === "month" && (
+                  <div className="grid gap-2">
+                    <div className="grid grid-cols-7 gap-2 text-xs font-semibold text-zinc-500">
+                      {dayNames.map((day) => (
+                        <span key={day}>{day}</span>
+                      ))}
                     </div>
-                  )}
-
-                  {clientCalendarTab === "week" && (
                     <div className="grid grid-cols-7 gap-2">
-                      {clientWeekDates.map((day) => {
+                      {clientMonthGrid.map((day) => {
+                        const isCurrentMonth =
+                          day.getMonth() === clientSelectedDate.getMonth();
                         const isSelected =
                           day.toDateString() ===
                           clientSelectedDate.toDateString();
@@ -1548,20 +2099,19 @@ export default function ProfilePage() {
                           <button
                             key={day.toISOString()}
                             type="button"
-                            className={`flex flex-col items-center gap-1 rounded-xl border px-2 py-3 text-xs transition ${
+                            className={`flex flex-col items-center justify-center gap-1 rounded-xl border px-2 py-2 text-xs transition ${
                               isSelected
                                 ? "border-emerald-500 bg-emerald-50 text-emerald-700"
                                 : "border-zinc-200 bg-white text-zinc-600 hover:border-emerald-300"
-                            }`}
+                            } ${isCurrentMonth ? "" : "opacity-50"}`}
                             onClick={() => {
                               setClientSelectedDate(day);
-                              setClientCalendarTab("day");
+                              setClientCalendarTab("week");
                             }}
                           >
                             <span className="font-semibold">
-                              {dayNames[(day.getDay() + 6) % 7]}
+                              {day.getDate()}
                             </span>
-                            <span>{day.getDate()}</span>
                             {hasOpen && (
                               <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
                             )}
@@ -1569,175 +2119,196 @@ export default function ProfilePage() {
                         );
                       })}
                     </div>
-                  )}
+                  </div>
+                )}
 
-                  {clientCalendarTab === "day" && (
-                    <div className="space-y-3">
-                      <p className="text-xs font-semibold uppercase tracking-[0.2em] text-zinc-500">
-                        {clientSelectedDate.toLocaleDateString("en-GB", {
-                          weekday: "long",
-                          month: "short",
-                          day: "numeric",
-                        })}
-                      </p>
-                      <div className="grid gap-2 sm:grid-cols-2">
-                        {daySlots.map((slot) => {
-                          const slotDate = new Date(clientSelectedDate);
-                          slotDate.setHours(slot.hour, slot.minute, 0, 0);
-                          const slotEnd = new Date(slotDate);
-                          slotEnd.setMinutes(slotEnd.getMinutes() + 30);
-                          const isOpen = isSlotWithinInterval(
-                            slotDate,
-                            providerAvailability,
-                          );
-                          const isConfirmed = isSlotWithinInterval(
-                            slotDate,
-                            confirmedAppointments.filter(
-                              (appointment) =>
-                                appointment.patient_id === userId &&
-                                appointment.provider_id ===
-                                  selectedProviderId &&
-                                isSlotOnDay(appointment, clientSelectedDate),
-                            ),
-                          );
-                          const isSelected =
-                            appointmentStart &&
-                            appointmentEnd &&
-                            slotDate.getTime() ===
-                              new Date(appointmentStart).getTime();
+                {clientCalendarTab === "week" && (
+                  <div className="grid grid-cols-7 gap-2">
+                    {clientWeekDates.map((day) => {
+                      const isSelected =
+                        day.toDateString() ===
+                        clientSelectedDate.toDateString();
+                      const hasOpen = providerAvailability.some((slot) =>
+                        isSlotOnDay(slot, day),
+                      );
 
-                          return (
-                            <button
-                              key={slot.label}
-                              type="button"
-                              disabled={!isOpen || isConfirmed}
-                              className={`flex items-center justify-between rounded-xl border px-3 py-2 text-xs transition ${
-                                isConfirmed
-                                  ? "border-red-200 bg-red-50 text-red-700"
-                                  : isSelected
-                                  ? "border-orange-200 bg-orange-50 text-orange-700"
-                                  : isOpen
-                                  ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-                                  : "border-zinc-200 bg-white text-zinc-400"
-                              }`}
-                              onClick={() => {
-                                setAppointmentStart(toLocalInput(slotDate));
-                                setAppointmentEnd(toLocalInput(slotEnd));
-                              }}
-                            >
-                              <span className="font-semibold">{slot.label}</span>
-                              <span>
-                                {isConfirmed
-                                  ? "Confirmed"
-                                  : isSelected
-                                  ? "Selected"
-                                  : isOpen
-                                  ? "Available"
-                                  : "Unavailable"}
-                              </span>
-                            </button>
-                          );
-                        })}
-                      </div>
+                      return (
+                        <button
+                          key={day.toISOString()}
+                          type="button"
+                          className={`flex flex-col items-center gap-1 rounded-xl border px-2 py-3 text-xs transition ${
+                            isSelected
+                              ? "border-emerald-500 bg-emerald-50 text-emerald-700"
+                              : "border-zinc-200 bg-white text-zinc-600 hover:border-emerald-300"
+                          }`}
+                          onClick={() => {
+                            setClientSelectedDate(day);
+                            setClientCalendarTab("day");
+                          }}
+                        >
+                          <span className="font-semibold">
+                            {dayNames[(day.getDay() + 6) % 7]}
+                          </span>
+                          <span>{day.getDate()}</span>
+                          {hasOpen && (
+                            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {clientCalendarTab === "day" && (
+                  <div className="space-y-3">
+                    <p className="text-xs font-semibold uppercase tracking-[0.2em] text-zinc-500">
+                      {clientSelectedDate.toLocaleDateString("en-GB", {
+                        weekday: "long",
+                        month: "short",
+                        day: "numeric",
+                      })}
+                    </p>
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      {daySlots.map((slot) => {
+                        const slotDate = new Date(clientSelectedDate);
+                        slotDate.setHours(slot.hour, slot.minute, 0, 0);
+                        const slotEnd = new Date(slotDate);
+                        slotEnd.setMinutes(slotEnd.getMinutes() + 30);
+                        const isOpen = isSlotWithinInterval(
+                          slotDate,
+                          providerAvailability,
+                        );
+                        const isConfirmed = isSlotWithinInterval(
+                          slotDate,
+                          confirmedAppointments.filter(
+                            (appointment) =>
+                              appointment.patient_id === userId &&
+                              appointment.provider_id ===
+                                selectedProviderId &&
+                              isSlotOnDay(appointment, clientSelectedDate),
+                          ),
+                        );
+                        const isSelected =
+                          appointmentStart &&
+                          appointmentEnd &&
+                          slotDate.getTime() ===
+                            new Date(appointmentStart).getTime();
+
+                        return (
+                          <button
+                            key={slot.label}
+                            type="button"
+                            disabled={!isOpen || isConfirmed}
+                            className={`flex items-center justify-between rounded-xl border px-3 py-2 text-xs transition ${
+                              isConfirmed
+                                ? "border-red-200 bg-red-50 text-red-700"
+                                : isSelected
+                                ? "border-orange-200 bg-orange-50 text-orange-700"
+                                : isOpen
+                                ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                                : "border-zinc-200 bg-white text-zinc-400"
+                            }`}
+                            onClick={() => {
+                              setAppointmentStart(toLocalInput(slotDate));
+                              setAppointmentEnd(toLocalInput(slotEnd));
+                            }}
+                          >
+                            <span className="font-semibold">{slot.label}</span>
+                            <span>
+                              {isConfirmed
+                                ? "Confirmed"
+                                : isSelected
+                                ? "Selected"
+                                : isOpen
+                                ? "Available"
+                                : "Unavailable"}
+                            </span>
+                          </button>
+                        );
+                      })}
                     </div>
-                  )}
-                </>
-              )}
-            </div>
+                  </div>
+                )}
+              </div>
+            )}
 
             <form
               className="flex flex-col gap-4"
               onSubmit={handleRequestAppointment}
             >
-                  <label className="flex flex-col gap-2 text-sm font-medium text-zinc-700">
-                    Medical professional
-                    <select
-                      className="rounded-2xl border border-zinc-200 bg-white px-4 py-3 text-base outline-none ring-emerald-200 transition focus:ring-2"
-                      value={selectedProviderId}
-                      onChange={(event) =>
-                        setSelectedProviderId(event.target.value)
-                      }
-                    >
-                      <option value="">Select a clinician</option>
-                      {providers.map((provider) => (
-                        <option key={provider.id} value={provider.id}>
-                          {provider.display_name ||
-                            provider.email ||
-                            provider.id}
-                          {provider.hourly_pay_gbp != null
-                            ? ` · ${formatCurrency(
-                                Number(provider.hourly_pay_gbp),
-                              )}/hr`
-                            : ""}
-                        </option>
-                      ))}
-                    </select>
-                    {selectedProviderRate != null ? (
-                      <span className="text-xs text-zinc-500">
-                        Hourly rate: {formatCurrency(selectedProviderRate)}
-                      </span>
-                    ) : selectedProviderId ? (
-                      <span className="text-xs text-amber-600">
-                        Hourly rate not set for this clinician.
-                      </span>
-                    ) : null}
-                  </label>
+              <div className="rounded-2xl border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-600">
+                <p className="font-semibold text-zinc-900">
+                  {selectedProvider
+                    ? `Selected clinician: ${selectedProvider.display_name || selectedProvider.email || "Clinician"}`
+                    : "Select a clinician to continue."}
+                </p>
+                {selectedProviderRate != null ? (
+                  <p className="mt-1 text-xs text-zinc-500">
+                    Hourly rate: {formatCurrency(selectedProviderRate)}
+                  </p>
+                ) : selectedProviderId ? (
+                  <p className="mt-1 text-xs text-amber-600">
+                    Hourly rate not set for this clinician.
+                  </p>
+                ) : null}
+              </div>
 
-                  <div className="grid gap-4 md:grid-cols-2">
-                    <label className="flex flex-col gap-2 text-sm font-medium text-zinc-700">
-                      Start
-                      <input
-                        type="datetime-local"
-                        className="rounded-2xl border border-zinc-200 bg-white px-4 py-3 text-base outline-none ring-emerald-200 transition focus:ring-2"
-                        value={appointmentStart}
-                        onChange={(event) =>
-                          setAppointmentStart(event.target.value)
-                        }
-                      />
-                    </label>
-                    <label className="flex flex-col gap-2 text-sm font-medium text-zinc-700">
-                      End
-                      <input
-                        type="datetime-local"
-                        className="rounded-2xl border border-zinc-200 bg-white px-4 py-3 text-base outline-none ring-emerald-200 transition focus:ring-2"
-                        value={appointmentEnd}
-                        onChange={(event) =>
-                          setAppointmentEnd(event.target.value)
-                        }
-                      />
-                    </label>
-                  </div>
+              <div className="grid gap-4 md:grid-cols-2">
+                <label className="flex flex-col gap-2 text-sm font-medium text-zinc-700">
+                  Start
+                  <input
+                    type="datetime-local"
+                    className="rounded-2xl border border-zinc-200 bg-white px-4 py-3 text-base outline-none ring-emerald-200 transition focus:ring-2 disabled:bg-zinc-100"
+                    value={appointmentStart}
+                    onChange={(event) =>
+                      setAppointmentStart(event.target.value)
+                    }
+                    disabled={!selectedProviderId}
+                  />
+                </label>
+                <label className="flex flex-col gap-2 text-sm font-medium text-zinc-700">
+                  End
+                  <input
+                    type="datetime-local"
+                    className="rounded-2xl border border-zinc-200 bg-white px-4 py-3 text-base outline-none ring-emerald-200 transition focus:ring-2 disabled:bg-zinc-100"
+                    value={appointmentEnd}
+                    onChange={(event) =>
+                      setAppointmentEnd(event.target.value)
+                    }
+                    disabled={!selectedProviderId}
+                  />
+                </label>
+              </div>
 
-                  <label className="flex flex-col gap-2 text-sm font-medium text-zinc-700">
-                    Notes for the clinician (optional)
-                    <textarea
-                      className="min-h-[120px] rounded-2xl border border-zinc-200 bg-white px-4 py-3 text-base outline-none ring-emerald-200 transition focus:ring-2"
-                      value={appointmentNotes}
-                      onChange={(event) =>
-                        setAppointmentNotes(event.target.value)
-                      }
-                    />
-                  </label>
+              <label className="flex flex-col gap-2 text-sm font-medium text-zinc-700">
+                Notes for the clinician (optional)
+                <textarea
+                  className="min-h-[120px] rounded-2xl border border-zinc-200 bg-white px-4 py-3 text-base outline-none ring-emerald-200 transition focus:ring-2 disabled:bg-zinc-100"
+                  value={appointmentNotes}
+                  onChange={(event) => setAppointmentNotes(event.target.value)}
+                  disabled={!selectedProviderId}
+                />
+              </label>
 
-                  {selectedEstimatedTotal != null &&
-                  selectedDurationMinutes &&
-                  selectedDurationMinutes > 0 ? (
-                    <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
-                      Estimated total for {selectedDurationMinutes} minutes:{" "}
-                      <span className="font-semibold">
-                        {formatCurrency(selectedEstimatedTotal)}
-                      </span>
-                    </div>
-                  ) : null}
+              {selectedEstimatedTotal != null &&
+              selectedDurationMinutes &&
+              selectedDurationMinutes > 0 ? (
+                <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+                  Estimated total for {selectedDurationMinutes} minutes:{" "}
+                  <span className="font-semibold">
+                    {formatCurrency(selectedEstimatedTotal)}
+                  </span>
+                </div>
+              ) : null}
 
-                  <button
-                    type="submit"
-                    className="rounded-2xl bg-emerald-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-emerald-300"
-                    disabled={scheduleStatus.type === "loading"}
-                  >
-                    Request appointment
-                  </button>
-                </form>
+              <button
+                type="submit"
+                className="rounded-2xl bg-emerald-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-emerald-300"
+                disabled={scheduleStatus.type === "loading" || !selectedProviderId}
+              >
+                Request appointment
+              </button>
+            </form>
 
                 <div className="space-y-3 rounded-2xl border border-zinc-200/80 bg-zinc-50/70 p-4 text-sm text-zinc-600">
                   <p className="font-semibold text-zinc-900">
@@ -1789,32 +2360,33 @@ export default function ProfilePage() {
             )}
 
             <aside className="flex flex-col gap-4 rounded-[28px] border border-zinc-200/70 bg-white p-8 shadow-[0_25px_70px_-60px_rgba(15,23,42,0.35)]">
-              <div className="space-y-2">
-                <p className="text-xs font-semibold uppercase tracking-[0.25em] text-zinc-500">
-                  Appointments
-                </p>
-                <h3 className="font-[var(--font-display)] text-xl font-semibold text-zinc-900">
-                  {showMedicalTools
-                    ? "Upcoming requests"
-                    : "Your requests"}
-                </h3>
-              </div>
-
-              {loadingAppointments ? (
-                <p className="text-sm text-zinc-500">Loading appointments…</p>
-              ) : appointments.length ? (
-                appointments.map((appointment) => {
+              <details className="rounded-2xl border border-zinc-200/80 bg-zinc-50/60 p-4" open>
+                <summary className="cursor-pointer list-none text-sm font-semibold text-zinc-900">
+                  {showMedicalTools ? "Upcoming requests" : "Your requests"}
+                </summary>
+                <div className="mt-4 space-y-3">
+                  {loadingAppointments ? (
+                    <p className="text-sm text-zinc-500">Loading appointments…</p>
+                  ) : upcomingAppointments.length ? (
+                    upcomingAppointments.map((appointment) => {
                   const counterpartId = showMedicalTools
                     ? appointment.patient_id
                     : appointment.provider_id;
                   const counterpart = profileLookup[counterpartId];
                   const draft = appointmentDrafts[appointment.id];
+                  const durationMinutes = getDurationMinutes(appointment);
+                  const statusTone =
+                    appointment.status === "requested"
+                      ? "text-amber-700"
+                      : appointment.status === "confirmed"
+                      ? "text-emerald-700"
+                      : "text-emerald-700";
 
-                  return (
-                    <div
-                      key={appointment.id}
-                      className="rounded-2xl border border-zinc-200/80 bg-zinc-50/70 p-4"
-                    >
+                      return (
+                        <div
+                          key={appointment.id}
+                          className="rounded-2xl border border-zinc-200/80 bg-white p-4"
+                        >
                       <p className="text-sm font-semibold text-zinc-900">
                         {counterpart?.display_name ||
                           counterpart?.email ||
@@ -1824,9 +2396,25 @@ export default function ProfilePage() {
                         {formatDateTime(appointment.starts_at)} –{" "}
                         {formatDateTime(appointment.ends_at)}
                       </p>
-                      <p className="mt-1 text-xs font-semibold uppercase tracking-[0.2em] text-emerald-700">
-                        {appointment.status}
-                      </p>
+                      {durationMinutes > 30 && (
+                        <p className="mt-2 text-xs font-semibold text-amber-700">
+                          Extended session selected: {durationMinutes} minutes
+                        </p>
+                      )}
+                      {appointment.status === "confirmed" ? (
+                        <Link
+                          className="mt-2 inline-flex items-center rounded-full bg-emerald-600 px-3 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-white transition hover:bg-emerald-700"
+                          href={`/appointments/${appointment.id}/connect`}
+                        >
+                          Connect now
+                        </Link>
+                      ) : (
+                        <p
+                          className={`mt-1 text-xs font-semibold uppercase tracking-[0.2em] ${statusTone}`}
+                        >
+                          {appointment.status}
+                        </p>
+                      )}
                       {appointment.notes && (
                         <p className="mt-2 text-xs text-zinc-600">
                           Notes: {appointment.notes}
@@ -1934,14 +2522,300 @@ export default function ProfilePage() {
                             </button>
                           </div>
                         )}
-                    </div>
-                  );
-                })
+                        </div>
+                      );
+                    })
+                  ) : (
+                    <p className="text-sm text-zinc-500">
+                      No appointments yet. New requests will show up here.
+                    </p>
+                  )}
+                </div>
+              </details>
+
+              <details className="rounded-2xl border border-zinc-200/80 bg-zinc-50/60 p-4">
+                <summary className="cursor-pointer list-none text-sm font-semibold text-zinc-900">
+                  Achieved consultations
+                </summary>
+                <div className="mt-4 space-y-3">
+                  {loadingAppointments ? (
+                    <p className="text-sm text-zinc-500">Loading consultations…</p>
+                  ) : completedAppointments.length ? (
+                    completedAppointments.map((appointment) => {
+                      const counterpartId = showMedicalTools
+                        ? appointment.patient_id
+                        : appointment.provider_id;
+                      const counterpart = profileLookup[counterpartId];
+                      const isPast = appointmentIsPast(appointment);
+                      const durationMinutes = getDurationMinutes(appointment);
+
+                      return (
+                        <div
+                          key={appointment.id}
+                          className={`rounded-2xl border border-zinc-200/80 bg-white p-4 ${
+                            isPast ? "opacity-60" : ""
+                          }`}
+                        >
+                          <p className="text-sm font-semibold text-zinc-900">
+                            {counterpart?.display_name ||
+                              counterpart?.email ||
+                              counterpartId}
+                          </p>
+                          <p className="mt-2 text-xs text-zinc-500">
+                            {formatDateTime(appointment.starts_at)} –{" "}
+                            {formatDateTime(appointment.ends_at)}
+                          </p>
+                          {durationMinutes > 30 && (
+                            <p className="mt-2 text-xs font-semibold text-zinc-500">
+                              Extended session: {durationMinutes} minutes
+                            </p>
+                          )}
+                          <p className="mt-1 text-xs font-semibold uppercase tracking-[0.2em] text-zinc-500">
+                            {appointment.status}
+                          </p>
+                        </div>
+                      );
+                    })
+                  ) : (
+                    <p className="text-sm text-zinc-500">
+                      No completed consultations yet.
+                    </p>
+                  )}
+                </div>
+              </details>
+
+              <details className="rounded-2xl border border-zinc-200/80 bg-zinc-50/60 p-4">
+                <summary className="cursor-pointer list-none text-sm font-semibold text-zinc-900">
+                  Available dates
+                </summary>
+                <div className="mt-4 space-y-3">
+                  {!showMedicalTools ? (
+                    <p className="text-sm text-zinc-500">
+                      Availability is managed by medical professionals.
+                    </p>
+                  ) : loadingAvailability ? (
+                    <p className="text-sm text-zinc-500">Loading availability…</p>
+                  ) : availability.length ? (
+                    availability.map((slot) => (
+                      <div
+                        key={slot.id}
+                        className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-zinc-200/80 bg-white px-4 py-3"
+                      >
+                        <div>
+                          <p className="text-sm font-semibold text-zinc-900">
+                            {formatDateTime(slot.starts_at)} –{" "}
+                            {formatDateTime(slot.ends_at)}
+                          </p>
+                          <p className="text-xs text-zinc-500">
+                            {slot.is_blocked
+                              ? "Marked unavailable"
+                              : "Open for booking"}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          className="rounded-full border border-zinc-200 px-4 py-2 text-xs font-semibold text-zinc-600 transition hover:border-zinc-400 hover:text-zinc-900"
+                          onClick={() => handleRemoveAvailability(slot.id)}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    ))
+                  ) : (
+                    <p className="text-sm text-zinc-500">
+                      No availability added yet.
+                    </p>
+                  )}
+                </div>
+              </details>
+
+              {profile?.role === "admin" && (
+                <details className="rounded-2xl border border-zinc-200/80 bg-zinc-50/60 p-4">
+                  <summary className="cursor-pointer list-none text-sm font-semibold text-zinc-900">
+                    Payout requests
+                  </summary>
+                  <div className="mt-4 space-y-3">
+                    {loadingPayoutRequests ? (
+                      <p className="text-sm text-zinc-500">
+                        Loading payout requests…
+                      </p>
+                    ) : payoutRequests.length ? (
+                      payoutRequests.map((request) => {
+                        const provider = profileLookup[request.provider_id];
+                        return (
+                          <div
+                            key={request.id}
+                            className="rounded-2xl border border-zinc-200/80 bg-white p-4"
+                          >
+                            <p className="text-sm font-semibold text-zinc-900">
+                              {provider?.display_name ||
+                                provider?.email ||
+                                request.provider_id}
+                            </p>
+                            <p className="mt-1 text-xs text-zinc-500">
+                              {request.paypal_email || "No PayPal email"}
+                            </p>
+                            <p className="mt-2 text-xs font-semibold text-emerald-700">
+                              {formatCurrency(Number(request.amount_gbp))}
+                            </p>
+                          </div>
+                        );
+                      })
+                    ) : (
+                      <p className="text-sm text-zinc-500">
+                        No pending payout requests.
+                      </p>
+                    )}
+                  </div>
+                </details>
+              )}
+            </aside>
+          </section>
+        )}
+
+        {profileTab === "meetings" && isAdmin && (
+          <section className="grid gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+            <div className="flex flex-col gap-6 rounded-[28px] border border-zinc-200/70 bg-white p-8 shadow-[0_25px_70px_-60px_rgba(15,23,42,0.35)]">
+              <div className="space-y-2">
+                <h2 className="font-[var(--font-display)] text-2xl font-semibold text-zinc-900">
+                  Upcoming meetings
+                </h2>
+                <p className="text-sm text-zinc-500">
+                  Review and edit upcoming appointments across the platform.
+                </p>
+              </div>
+
+              {loadingAppointments ? (
+                <p className="text-sm text-zinc-500">Loading appointments…</p>
+              ) : upcomingAppointments.length ? (
+                <div className="space-y-4">
+                  {upcomingAppointments.map((appointment) => {
+                    const counterpartId = appointment.provider_id;
+                    const provider = profileLookup[counterpartId];
+                    const patient = profileLookup[appointment.patient_id];
+                    const draft = appointmentDrafts[appointment.id];
+
+                    return (
+                      <div
+                        key={appointment.id}
+                        className="rounded-2xl border border-zinc-200/80 bg-zinc-50/70 p-4"
+                      >
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <p className="text-sm font-semibold text-zinc-900">
+                              {patient?.display_name ||
+                                patient?.email ||
+                                appointment.patient_id}
+                            </p>
+                            <p className="text-xs text-zinc-500">
+                              Clinician:{" "}
+                              {provider?.display_name ||
+                                provider?.email ||
+                                appointment.provider_id}
+                            </p>
+                          </div>
+                          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-emerald-700">
+                            {appointment.status}
+                          </p>
+                        </div>
+
+                        <div className="mt-4 grid gap-3 md:grid-cols-3">
+                          <input
+                            type="datetime-local"
+                            className="rounded-2xl border border-zinc-200 bg-white px-3 py-2 text-xs outline-none ring-emerald-200 transition focus:ring-2"
+                            value={draft?.starts_at ?? ""}
+                            onChange={(event) =>
+                              setAppointmentDrafts((prev) => ({
+                                ...prev,
+                                [appointment.id]: {
+                                  starts_at: event.target.value,
+                                  ends_at: draft?.ends_at ?? "",
+                                  reason: draft?.reason ?? "",
+                                },
+                              }))
+                            }
+                          />
+                          <input
+                            type="datetime-local"
+                            className="rounded-2xl border border-zinc-200 bg-white px-3 py-2 text-xs outline-none ring-emerald-200 transition focus:ring-2"
+                            value={draft?.ends_at ?? ""}
+                            onChange={(event) =>
+                              setAppointmentDrafts((prev) => ({
+                                ...prev,
+                                [appointment.id]: {
+                                  starts_at: draft?.starts_at ?? "",
+                                  ends_at: event.target.value,
+                                  reason: draft?.reason ?? "",
+                                },
+                              }))
+                            }
+                          />
+                          <select
+                            className="rounded-2xl border border-zinc-200 bg-white px-3 py-2 text-xs outline-none ring-emerald-200 transition focus:ring-2"
+                            value={adminStatusDrafts[appointment.id] ?? appointment.status}
+                            onChange={(event) =>
+                              setAdminStatusDrafts((prev) => ({
+                                ...prev,
+                                [appointment.id]: event.target.value as AppointmentStatus,
+                              }))
+                            }
+                          >
+                            {(
+                              [
+                                "requested",
+                                "proposed",
+                                "confirmed",
+                                "cancelled",
+                                "completed",
+                              ] as AppointmentStatus[]
+                            ).map((status) => (
+                              <option key={status} value={status}>
+                                {status}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div className="mt-4 flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            className="rounded-full bg-emerald-600 px-3 py-2 text-xs font-semibold text-white transition hover:bg-emerald-700"
+                            onClick={() => handleAdminUpdate(appointment.id)}
+                          >
+                            Save changes
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
               ) : (
                 <p className="text-sm text-zinc-500">
-                  No appointments yet. New requests will show up here.
+                  No upcoming meetings found.
                 </p>
               )}
+
+              {scheduleStatus.type !== "idle" && scheduleStatus.message && (
+                <p
+                  className={`rounded-2xl border px-4 py-3 text-sm ${
+                    scheduleStatus.type === "error"
+                      ? "border-red-200 bg-red-50 text-red-700"
+                      : "border-emerald-200 bg-emerald-50 text-emerald-700"
+                  }`}
+                >
+                  {scheduleStatus.message}
+                </p>
+              )}
+            </div>
+
+            <aside className="flex flex-col gap-4 rounded-[28px] border border-zinc-200/70 bg-white p-8 shadow-[0_25px_70px_-60px_rgba(15,23,42,0.35)]">
+              <p className="text-xs font-semibold uppercase tracking-[0.25em] text-zinc-500">
+                Admin notes
+              </p>
+              <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4 text-sm text-zinc-600">
+                Use this view to update appointment times or status across the
+                platform. Changes take effect immediately.
+              </div>
             </aside>
           </section>
         )}
