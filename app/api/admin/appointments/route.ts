@@ -66,7 +66,12 @@ export async function GET(request: Request) {
     ),
   );
 
-  let profiles = [];
+  let profiles: Array<{
+    id: string;
+    email: string | null;
+    display_name: string | null;
+    role: string;
+  }> = [];
   if (profileIds.length) {
     const { data: profileData } = await supabase
       .from("askmidwife_profiles")
