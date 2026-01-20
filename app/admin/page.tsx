@@ -11,7 +11,7 @@ type Profile = {
   email: string | null;
   display_name: string | null;
   role: ProfileRole;
-  paypal_email: string | null;
+  paypal_email?: string | null;
 };
 
 type PayoutRequest = {
