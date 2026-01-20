@@ -88,7 +88,7 @@ export async function GET(request: Request) {
   const supabase = createSupabaseServerClient();
   const { data: paymentRecord, error: paymentFetchError } = await supabase
     .from("askmidwife_appointment_payments")
-    .select("id, status")
+    .select("id, status, platform_fee_gbp")
     .eq("appointment_id", appointmentId)
     .maybeSingle();
 
@@ -117,6 +117,23 @@ export async function GET(request: Request) {
     return NextResponse.json(
       { error: "Failed to update payment record." },
       { status: 500 },
+    );
+  }
+
+  const platformFee =
+    paymentRecord.platform_fee_gbp != null
+      ? Number(paymentRecord.platform_fee_gbp)
+      : null;
+
+  if (platformFee != null) {
+    await supabase.from("askmidwife_platform_fees").upsert(
+      {
+        appointment_id: appointmentId,
+        payment_id: paymentRecord.id,
+        amount_gbp: platformFee,
+        status: "earned",
+      },
+      { onConflict: "appointment_id" },
     );
   }
 

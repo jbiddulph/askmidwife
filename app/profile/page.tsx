@@ -61,6 +61,18 @@ type PayoutRequest = {
   created_at: string;
 };
 
+type PayoutPayment = {
+  id: string;
+  request_id: string | null;
+  provider_id: string;
+  amount_gbp: number;
+  payout_provider: "manual" | "paypal";
+  payout_reference: string | null;
+  status: "pending" | "paid" | "failed";
+  created_at: string;
+  processed_at: string | null;
+};
+
 type Status = {
   type: "idle" | "loading" | "error" | "success";
   message?: string;
@@ -342,6 +354,8 @@ export default function ProfilePage() {
   const [loadingPayoutRequests, setLoadingPayoutRequests] = useState(false);
   const [providerPendingPayout, setProviderPendingPayout] =
     useState<PayoutRequest | null>(null);
+  const [providerPayouts, setProviderPayouts] = useState<PayoutPayment[]>([]);
+  const [loadingProviderPayouts, setLoadingProviderPayouts] = useState(false);
   const [profileTab, setProfileTab] = useState<ProfileTab>("profile");
 
   const daySlots = useMemo(() => createTimeSlots(9, 18, 30, 0), []);
@@ -614,6 +628,32 @@ export default function ProfilePage() {
 
     loadPayoutRequests();
   }, [supabase, profile?.role]);
+
+  useEffect(() => {
+    if (!userId || profile?.role !== "medical") {
+      setProviderPayouts([]);
+      return;
+    }
+
+    const loadProviderPayouts = async () => {
+      setLoadingProviderPayouts(true);
+      const { data, error } = await supabase
+        .from("askmidwife_payout_payments")
+        .select(
+          "id, request_id, provider_id, amount_gbp, payout_provider, payout_reference, status, created_at, processed_at",
+        )
+        .eq("provider_id", userId)
+        .eq("status", "paid")
+        .order("processed_at", { ascending: false });
+
+      if (!error) {
+        setProviderPayouts((data as PayoutPayment[]) ?? []);
+      }
+      setLoadingProviderPayouts(false);
+    };
+
+    loadProviderPayouts();
+  }, [supabase, userId, profile?.role]);
 
   useEffect(() => {
     if (!userId) {
@@ -1513,7 +1553,7 @@ export default function ProfilePage() {
               </label>
             )}
 
-            {formRole === "medical" && (
+            {(formRole === "medical" || formRole === "admin") && (
               <label className="flex flex-col gap-2 text-sm font-medium text-zinc-700">
                 PayPal email
                 <input
@@ -2628,6 +2668,42 @@ export default function ProfilePage() {
                   )}
                 </div>
               </details>
+
+              {profile?.role === "medical" && (
+                <details className="rounded-2xl border border-zinc-200/80 bg-zinc-50/60 p-4">
+                  <summary className="cursor-pointer list-none text-sm font-semibold text-zinc-900">
+                    Paid payouts
+                  </summary>
+                  <div className="mt-4 space-y-3">
+                    {loadingProviderPayouts ? (
+                      <p className="text-sm text-zinc-500">Loading payouts…</p>
+                    ) : providerPayouts.length ? (
+                      providerPayouts.map((payout) => (
+                        <div
+                          key={payout.id}
+                          className="rounded-2xl border border-zinc-200/80 bg-white p-4"
+                        >
+                          <p className="text-sm font-semibold text-zinc-900">
+                            {formatCurrency(Number(payout.amount_gbp))}
+                          </p>
+                          <p className="mt-1 text-xs text-zinc-500">
+                            {payout.payout_provider.toUpperCase()} payout
+                          </p>
+                          {payout.processed_at && (
+                            <p className="mt-1 text-xs text-zinc-500">
+                              {formatDateTime(payout.processed_at)}
+                            </p>
+                          )}
+                        </div>
+                      ))
+                    ) : (
+                      <p className="text-sm text-zinc-500">
+                        No paid payouts yet.
+                      </p>
+                    )}
+                  </div>
+                </details>
+              )}
 
               {profile?.role === "admin" && (
                 <details className="rounded-2xl border border-zinc-200/80 bg-zinc-50/60 p-4">

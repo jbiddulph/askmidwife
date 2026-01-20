@@ -84,6 +84,12 @@ export async function POST(request: Request) {
     );
   }
 
+  const { data: providerProfile } = await supabase
+    .from("askmidwife_profiles")
+    .select("id, role")
+    .eq("id", requestRow.provider_id)
+    .maybeSingle();
+
   const { error: updateError } = await supabase
     .from("askmidwife_payout_requests")
     .update({ status: "paid" })
@@ -113,6 +119,29 @@ export async function POST(request: Request) {
       { error: "Failed to record payout payment." },
       { status: 500 },
     );
+  }
+
+  await supabase
+    .from("askmidwife_appointment_payments")
+    .update({
+      payout_request_id: payload.requestId,
+      payout_status: "paid",
+      payout_paid_at: new Date().toISOString(),
+    })
+    .eq("provider_id", requestRow.provider_id)
+    .eq("status", "paid")
+    .or("payout_status.is.null,payout_status.eq.pending");
+
+  if (providerProfile?.role === "admin") {
+    await supabase
+      .from("askmidwife_platform_fees")
+      .update({
+        payout_request_id: payload.requestId,
+        status: "paid",
+        paid_at: new Date().toISOString(),
+      })
+      .is("payout_request_id", null)
+      .eq("status", "earned");
   }
 
   return NextResponse.json({ status: "paid" });

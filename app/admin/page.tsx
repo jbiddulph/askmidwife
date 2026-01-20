@@ -11,6 +11,7 @@ type Profile = {
   email: string | null;
   display_name: string | null;
   role: ProfileRole;
+  paypal_email: string | null;
 };
 
 type PayoutRequest = {
@@ -22,6 +23,22 @@ type PayoutRequest = {
   created_at: string;
 };
 
+type PayoutPayment = {
+  id: string;
+  request_id: string | null;
+  provider_id: string;
+  amount_gbp: number;
+  payout_provider: "manual" | "paypal";
+  status: "pending" | "paid" | "failed";
+  processed_at: string | null;
+};
+
+type PlatformFeeSummary = {
+  earned: number;
+  pending: number;
+  paid: number;
+};
+
 type Status = {
   type: "idle" | "loading" | "error";
   message?: string;
@@ -31,6 +48,14 @@ type ActionStatus = {
   type: "idle" | "loading" | "error" | "success";
   message?: string;
 };
+
+const formatCurrency = (value: number) =>
+  new Intl.NumberFormat("en-GB", {
+    style: "currency",
+    currency: "GBP",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(value);
 
 export default function AdminPage() {
   const supabase = useMemo(() => createSupabaseBrowserClient(), []);
@@ -46,6 +71,17 @@ export default function AdminPage() {
   const [payoutActionStatus, setPayoutActionStatus] = useState<
     Record<string, ActionStatus>
   >({});
+  const [paidPayouts, setPaidPayouts] = useState<PayoutPayment[]>([]);
+  const [loadingPaidPayouts, setLoadingPaidPayouts] = useState(false);
+  const [platformFees, setPlatformFees] = useState<PlatformFeeSummary>({
+    earned: 0,
+    pending: 0,
+    paid: 0,
+  });
+  const [loadingPlatformFees, setLoadingPlatformFees] = useState(false);
+  const [platformPayoutStatus, setPlatformPayoutStatus] = useState<ActionStatus>({
+    type: "idle",
+  });
 
   useEffect(() => {
     let mounted = true;
@@ -66,7 +102,7 @@ export default function AdminPage() {
 
       const { data, error } = await supabase
         .from("askmidwife_profiles")
-        .select("id, email, display_name, role")
+        .select("id, email, display_name, role, paypal_email")
         .eq("id", userId)
         .maybeSingle();
 
@@ -136,6 +172,79 @@ export default function AdminPage() {
     loadPayoutRequests();
   }, [isAdmin, supabase]);
 
+  useEffect(() => {
+    if (!isAdmin) return;
+
+    const loadPaidPayouts = async () => {
+      setLoadingPaidPayouts(true);
+      const { data, error } = await supabase
+        .from("askmidwife_payout_payments")
+        .select("id, request_id, provider_id, amount_gbp, payout_provider, status, processed_at")
+        .eq("status", "paid")
+        .order("processed_at", { ascending: false });
+
+      if (!error) {
+        const payouts = (data as PayoutPayment[]) ?? [];
+        setPaidPayouts(payouts);
+
+        const providerIds = Array.from(
+          new Set(payouts.map((payout) => payout.provider_id)),
+        );
+        if (providerIds.length) {
+          const { data: profileData } = await supabase
+            .from("askmidwife_profiles")
+            .select("id, email, display_name, role")
+            .in("id", providerIds);
+
+          if (profileData) {
+            setProviderLookup((prev) => {
+              const next = { ...prev };
+              profileData.forEach((item) => {
+                next[item.id] = item;
+              });
+              return next;
+            });
+          }
+        }
+      }
+      setLoadingPaidPayouts(false);
+    };
+
+    loadPaidPayouts();
+  }, [isAdmin, supabase]);
+
+  useEffect(() => {
+    if (!isAdmin) return;
+
+    const loadPlatformFees = async () => {
+      setLoadingPlatformFees(true);
+      const { data, error } = await supabase
+        .from("askmidwife_platform_fees")
+        .select("amount_gbp, status");
+
+      if (!error) {
+        const summary = (data ?? []).reduce(
+          (acc, item) => {
+            const amount = Number(item.amount_gbp) || 0;
+            if (item.status === "paid") {
+              acc.paid += amount;
+            } else if (item.status === "pending") {
+              acc.pending += amount;
+            } else {
+              acc.earned += amount;
+            }
+            return acc;
+          },
+          { earned: 0, pending: 0, paid: 0 },
+        );
+        setPlatformFees(summary);
+      }
+      setLoadingPlatformFees(false);
+    };
+
+    loadPlatformFees();
+  }, [isAdmin, supabase]);
+
   const updateActionStatus = (requestId: string, next: ActionStatus) => {
     setPayoutActionStatus((prev) => ({
       ...prev,
@@ -193,6 +302,73 @@ export default function AdminPage() {
         prev.filter((item) => item.id !== request.id),
       );
     }
+  };
+
+  const handlePlatformPayoutRequest = async () => {
+    setPlatformPayoutStatus({ type: "loading" });
+
+    if (!profile?.id) {
+      setPlatformPayoutStatus({
+        type: "error",
+        message: "Admin profile not available.",
+      });
+      return;
+    }
+
+    if (!profile.paypal_email) {
+      setPlatformPayoutStatus({
+        type: "error",
+        message: "Add a PayPal email to your admin profile first.",
+      });
+      return;
+    }
+
+    if (platformFees.earned <= 0) {
+      setPlatformPayoutStatus({
+        type: "error",
+        message: "No available platform fees to request.",
+      });
+      return;
+    }
+
+    const { data, error } = await supabase
+      .from("askmidwife_payout_requests")
+      .insert({
+        provider_id: profile.id,
+        amount_gbp: Number(platformFees.earned.toFixed(2)),
+        paypal_email: profile.paypal_email,
+        status: "pending",
+      })
+      .select("id, provider_id, amount_gbp, paypal_email, status, created_at")
+      .maybeSingle();
+
+    if (error || !data?.id) {
+      setPlatformPayoutStatus({
+        type: "error",
+        message: error?.message ?? "Unable to create payout request.",
+      });
+      return;
+    }
+
+    await supabase
+      .from("askmidwife_platform_fees")
+      .update({
+        payout_request_id: data.id,
+        status: "pending",
+      })
+      .eq("status", "earned")
+      .is("payout_request_id", null);
+
+    setPayoutRequests((prev) => [data as PayoutRequest, ...prev]);
+    setPlatformFees((prev) => ({
+      earned: 0,
+      pending: prev.pending + prev.earned,
+      paid: prev.paid,
+    }));
+    setPlatformPayoutStatus({
+      type: "success",
+      message: "Platform payout request created.",
+    });
   };
 
   return (
@@ -331,6 +507,126 @@ export default function AdminPage() {
                     </div>
                   );
                 })}
+            </div>
+          </section>
+        )}
+
+        {status.type === "idle" && isAdmin && (
+          <section className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+            <div className="rounded-[28px] border border-zinc-200/70 bg-white p-8 shadow-[0_25px_70px_-60px_rgba(15,23,42,0.35)]">
+              <div className="space-y-2">
+                <p className="text-xs font-semibold uppercase tracking-[0.25em] text-zinc-500">
+                  Platform fees
+                </p>
+                <h2 className="font-[var(--font-display)] text-2xl font-semibold text-zinc-900">
+                  15% fee totals
+                </h2>
+              </div>
+              <div className="mt-6 space-y-3">
+                {loadingPlatformFees ? (
+                  <p className="text-sm text-zinc-500">Loading fee totals…</p>
+                ) : (
+                  <>
+                    <div className="rounded-2xl border border-zinc-200/80 bg-zinc-50/70 px-4 py-3">
+                      <p className="text-xs text-zinc-500">Available</p>
+                      <p className="text-lg font-semibold text-zinc-900">
+                        {formatCurrency(platformFees.earned)}
+                      </p>
+                    </div>
+                    <div className="rounded-2xl border border-zinc-200/80 bg-zinc-50/70 px-4 py-3">
+                      <p className="text-xs text-zinc-500">Pending</p>
+                      <p className="text-lg font-semibold text-zinc-900">
+                        {formatCurrency(platformFees.pending)}
+                      </p>
+                    </div>
+                    <div className="rounded-2xl border border-zinc-200/80 bg-zinc-50/70 px-4 py-3">
+                      <p className="text-xs text-zinc-500">Paid out</p>
+                      <p className="text-lg font-semibold text-zinc-900">
+                        {formatCurrency(platformFees.paid)}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      className="rounded-full bg-emerald-600 px-4 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-emerald-300"
+                      onClick={handlePlatformPayoutRequest}
+                      disabled={
+                        platformFees.earned <= 0 ||
+                        platformPayoutStatus.type === "loading"
+                      }
+                    >
+                      Request platform payout
+                    </button>
+                    {platformPayoutStatus.message && (
+                      <p
+                        className={`rounded-2xl border px-3 py-2 text-xs ${
+                          platformPayoutStatus.type === "error"
+                            ? "border-red-200 bg-red-50 text-red-700"
+                            : "border-emerald-200 bg-emerald-50 text-emerald-700"
+                        }`}
+                      >
+                        {platformPayoutStatus.message}
+                      </p>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+
+            <div className="rounded-[28px] border border-zinc-200/70 bg-white p-8 shadow-[0_25px_70px_-60px_rgba(15,23,42,0.35)]">
+              <div className="space-y-2">
+                <p className="text-xs font-semibold uppercase tracking-[0.25em] text-zinc-500">
+                  Paid payouts
+                </p>
+                <h2 className="font-[var(--font-display)] text-2xl font-semibold text-zinc-900">
+                  Completed payouts
+                </h2>
+              </div>
+              <div className="mt-6 space-y-3">
+                {loadingPaidPayouts ? (
+                  <p className="text-sm text-zinc-500">Loading payouts…</p>
+                ) : paidPayouts.length ? (
+                  paidPayouts.map((payout) => {
+                    const provider = providerLookup[payout.provider_id];
+                    return (
+                      <div
+                        key={payout.id}
+                        className="rounded-2xl border border-zinc-200/80 bg-zinc-50/70 px-4 py-3"
+                      >
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <p className="text-sm font-semibold text-zinc-900">
+                              {provider?.display_name ||
+                                provider?.email ||
+                                payout.provider_id}
+                            </p>
+                            <p className="text-xs text-zinc-500">
+                              {payout.payout_provider.toUpperCase()} payout
+                            </p>
+                          </div>
+                          <p className="text-sm font-semibold text-emerald-700">
+                            {formatCurrency(Number(payout.amount_gbp))}
+                          </p>
+                        </div>
+                        {payout.processed_at && (
+                          <p className="mt-2 text-xs text-zinc-500">
+                            {new Date(payout.processed_at).toLocaleString(
+                              "en-GB",
+                              {
+                                dateStyle: "medium",
+                                timeStyle: "short",
+                              },
+                            )}
+                          </p>
+                        )}
+                      </div>
+                    );
+                  })
+                ) : (
+                  <p className="text-sm text-zinc-500">
+                    No paid payouts yet.
+                  </p>
+                )}
+              </div>
             </div>
           </section>
         )}

@@ -133,6 +133,12 @@ export async function POST(request: Request) {
     );
   }
 
+  const { data: providerProfile } = await supabase
+    .from("askmidwife_profiles")
+    .select("id, role")
+    .eq("id", requestRow.provider_id)
+    .maybeSingle();
+
   const tokenResponse = await fetch(`${paypalApiBase}/v1/oauth2/token`, {
     method: "POST",
     headers: {
@@ -212,11 +218,39 @@ export async function POST(request: Request) {
     );
   }
 
+  await supabase
+    .from("askmidwife_appointment_payments")
+    .update({
+      payout_request_id: requestRow.id,
+      payout_status: normalizedStatus === "paid" ? "paid" : "pending",
+      payout_paid_at:
+        normalizedStatus === "paid" ? new Date().toISOString() : null,
+    })
+    .eq("provider_id", requestRow.provider_id)
+    .eq("status", "paid")
+    .or(
+      normalizedStatus === "paid"
+        ? "payout_status.is.null,payout_status.eq.pending"
+        : "payout_status.is.null",
+    );
+
   if (normalizedStatus === "paid") {
     await supabase
       .from("askmidwife_payout_requests")
       .update({ status: "paid" })
       .eq("id", requestRow.id);
+
+    if (providerProfile?.role === "admin") {
+      await supabase
+        .from("askmidwife_platform_fees")
+        .update({
+          payout_request_id: requestRow.id,
+          status: "paid",
+          paid_at: new Date().toISOString(),
+        })
+        .is("payout_request_id", null)
+        .eq("status", "earned");
+    }
   }
 
   return NextResponse.json({ status: normalizedStatus });

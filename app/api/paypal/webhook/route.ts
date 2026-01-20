@@ -171,6 +171,12 @@ export async function POST(request: Request) {
   const normalizedStatus = successEvents.has(eventType) ? "paid" : "failed";
   const payoutStatus = normalizedStatus === "paid" ? "paid" : "failed";
 
+  const { data: providerProfile } = await supabase
+    .from("askmidwife_profiles")
+    .select("id, role")
+    .eq("id", requestRow.provider_id)
+    .maybeSingle();
+
   const { data: paymentRow } = await supabase
     .from("askmidwife_payout_payments")
     .select("id")
@@ -208,6 +214,34 @@ export async function POST(request: Request) {
     .from("askmidwife_payout_requests")
     .update({ status: normalizedStatus })
     .eq("id", senderItemId);
+
+  await supabase
+    .from("askmidwife_appointment_payments")
+    .update({
+      payout_request_id: senderItemId,
+      payout_status: payoutStatus,
+      payout_paid_at:
+        payoutStatus === "paid" ? new Date().toISOString() : null,
+    })
+    .eq("provider_id", requestRow.provider_id)
+    .eq("status", "paid")
+    .or(
+      payoutStatus === "paid"
+        ? "payout_status.is.null,payout_status.eq.pending"
+        : "payout_status.is.null",
+    );
+
+  if (providerProfile?.role === "admin" && payoutStatus === "paid") {
+    await supabase
+      .from("askmidwife_platform_fees")
+      .update({
+        payout_request_id: senderItemId,
+        status: "paid",
+        paid_at: new Date().toISOString(),
+      })
+      .is("payout_request_id", null)
+      .eq("status", "earned");
+  }
 
   return NextResponse.json({ received: true });
 }
