@@ -584,10 +584,13 @@ export default function AdminPage() {
                       onClick={handlePlatformPayoutRequest}
                       disabled={
                         platformFees.earned <= 0 ||
-                        platformPayoutStatus.type === "loading"
+                        platformPayoutStatus.type === "loading" ||
+                        Boolean(pendingPlatformRequest)
                       }
                     >
-                      Request platform payout
+                      {pendingPlatformRequest
+                        ? "Platform payout pending"
+                        : "Request platform payout"}
                     </button>
                     {platformPayoutStatus.message && (
                       <p
@@ -598,6 +601,11 @@ export default function AdminPage() {
                         }`}
                       >
                         {platformPayoutStatus.message}
+                      </p>
+                    )}
+                    {pendingPlatformRequest && (
+                      <p className="rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+                        Pending request ID: {pendingPlatformRequest.id}
                       </p>
                     )}
                   </>
