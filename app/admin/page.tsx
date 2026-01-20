@@ -82,6 +82,8 @@ export default function AdminPage() {
   const [platformPayoutStatus, setPlatformPayoutStatus] = useState<ActionStatus>({
     type: "idle",
   });
+  const [pendingPlatformRequest, setPendingPlatformRequest] =
+    useState<PayoutRequest | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -171,6 +173,28 @@ export default function AdminPage() {
 
     loadPayoutRequests();
   }, [isAdmin, supabase]);
+
+  useEffect(() => {
+    if (!isAdmin || !profile?.id) {
+      setPendingPlatformRequest(null);
+      return;
+    }
+
+    const loadPendingPlatformRequest = async () => {
+      const { data } = await supabase
+        .from("askmidwife_payout_requests")
+        .select("id, provider_id, amount_gbp, paypal_email, status, created_at")
+        .eq("provider_id", profile.id)
+        .eq("status", "pending")
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      setPendingPlatformRequest((data as PayoutRequest) ?? null);
+    };
+
+    loadPendingPlatformRequest();
+  }, [isAdmin, profile?.id, supabase]);
 
   useEffect(() => {
     if (!isAdmin) return;
@@ -331,6 +355,14 @@ export default function AdminPage() {
       return;
     }
 
+    if (pendingPlatformRequest) {
+      setPlatformPayoutStatus({
+        type: "error",
+        message: "A platform payout request is already pending.",
+      });
+      return;
+    }
+
     const { data, error } = await supabase
       .from("askmidwife_payout_requests")
       .insert({
@@ -365,6 +397,7 @@ export default function AdminPage() {
       pending: prev.pending + prev.earned,
       paid: prev.paid,
     }));
+    setPendingPlatformRequest(data as PayoutRequest);
     setPlatformPayoutStatus({
       type: "success",
       message: "Platform payout request created.",
