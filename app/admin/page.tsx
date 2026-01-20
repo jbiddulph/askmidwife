@@ -280,6 +280,13 @@ export default function AdminPage() {
     request: PayoutRequest,
     action: "mark-paid" | "paypal",
   ) => {
+    if (request.status !== "pending") {
+      updateActionStatus(request.id, {
+        type: "error",
+        message: "This payout request is no longer pending.",
+      });
+      return;
+    }
     updateActionStatus(request.id, { type: "loading" });
 
     const { data: sessionData, error: sessionError } =
