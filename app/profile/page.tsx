@@ -878,7 +878,10 @@ export default function ProfilePage() {
       display_name: formName.trim(),
       role: formRole,
       hourly_pay_gbp: formRole === "medical" ? hourlyPayValue : null,
-      paypal_email: formRole === "medical" ? formPaypalEmail.trim() || null : null,
+      paypal_email:
+        formRole === "medical" || formRole === "admin"
+          ? formPaypalEmail.trim() || null
+          : null,
     };
 
     const { error } = profile
