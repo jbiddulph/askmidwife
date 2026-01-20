@@ -529,7 +529,7 @@ export default function ProfilePage() {
       setEarningsStatus({ type: "loading" });
       const { data, error } = await supabase
         .from("askmidwife_appointment_payments")
-        .select("provider_earnings_gbp, status")
+        .select("provider_earnings_gbp, status, payout_status")
         .eq("provider_id", userId);
 
       if (error) {
@@ -541,7 +541,11 @@ export default function ProfilePage() {
         (acc, item) => {
           const amount = Number(item.provider_earnings_gbp) || 0;
           if (item.status === "paid") {
-            acc.available += amount;
+            if (item.payout_status === "paid" || item.payout_status === "pending") {
+              acc.pending += amount;
+            } else {
+              acc.available += amount;
+            }
           } else if (item.status === "pending") {
             acc.pending += amount;
           }
